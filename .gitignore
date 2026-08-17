@@ -45,8 +45,13 @@ backend_lb_config.json
 frontend_lb_config.json
 3}
 
-# Neural (separate sub-project, not part of this repo)
-Neural/
+# Neural venv only
+Neural/.venv/
+
+# Neural training data (binary) and generated images
+Neural/data/mnist/
+*.png
+*.docx
 
 # Old snapshot directory
 ssl-main/
