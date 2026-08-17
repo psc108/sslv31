@@ -1,0 +1,90 @@
+---
+- name: Purge existing redis
+  apt:
+    name: [redis-server, redis-tools]
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Install redis
+  apt:
+    name: [redis-server, redis-tools]
+    state: present
+    update_cache: yes
+
+# Bare redis_* vars were never actually wired up — site.yml's product loop
+# only sets product_vars (the whole dict), never flattens it into bare names,
+# so every reference here used to silently fall through to its | default(...)
+# regardless of what was actually configured. Every reference is now
+# product_vars.<key>, matching redis_*'s own config_schema keys in
+# catalogue_service.py and the working pattern already used by rabbitmq/mysql.
+
+- name: Create redis SSL directory
+  file:
+    path: /etc/redis/ssl
+    state: directory
+    owner: redis
+    group: redis
+    mode: "0750"
+  when: product_vars.redis_tls_enabled | default(true) | bool
+
+- name: Deploy Redis server certificate
+  copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/redis/ssl/server.crt
+    owner: redis
+    group: redis
+    mode: "0644"
+  when: product_vars.redis_tls_enabled | default(true) | bool
+
+- name: Deploy Redis server key
+  copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/redis/ssl/server.key
+    owner: redis
+    group: redis
+    mode: "0600"
+  when: product_vars.redis_tls_enabled | default(true) | bool
+
+- name: Deploy Redis CA chain
+  copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/redis/ssl/ca.crt
+    owner: redis
+    group: redis
+    mode: "0644"
+  when: product_vars.redis_tls_enabled | default(true) | bool
+
+- name: Configure redis
+  copy:
+    dest: /etc/redis/redis.conf
+    content: |
+      bind {{ product_vars.redis_bind | default('0.0.0.0') }}
+      port {{ product_vars.redis_port | default(6379) }}
+      daemonize no
+      supervised systemd
+      maxmemory {{ product_vars.redis_maxmemory | default('256mb') }}
+      maxmemory-policy {{ product_vars.redis_maxmemory_policy | default('allkeys-lru') }}
+      dir /var/lib/redis
+      dbfilename dump.rdb
+      {% if product_vars.redis_password | default('') %}
+      requirepass {{ product_vars.redis_password }}
+      {% endif %}
+      {% if product_vars.redis_tls_enabled | default(true) | bool %}
+      tls-port {{ product_vars.redis_port | default(6379) }}
+      port 0
+      tls-cert-file /etc/redis/ssl/server.crt
+      tls-key-file /etc/redis/ssl/server.key
+      tls-ca-cert-file /etc/redis/ssl/ca.crt
+      tls-auth-clients no
+      {% endif %}
+    owner: redis
+    group: redis
+    mode: "0640"
+
+- name: Enable and restart redis
+  systemd:
+    name: redis-server
+    enabled: yes
+    state: restarted
+    daemon_reload: yes

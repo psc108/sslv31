@@ -1,0 +1,30 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    pyyaml_extra_pip_packages: "{{ (product_vars.pyyaml_extra_pip_packages | default('')).split(',') | map('trim') | select | join(' ') }}"
+
+# --break-system-packages: Ubuntu 24.04's system pip refuses a bare
+# system-wide install otherwise (PEP 668, "externally managed environment").
+# Previously missing here — piping through `tail` meant this task's own
+# exit code was always tail's (0), not pip's, so a PEP-668 failure was
+# masked as "changed" rather than failing outright; only the *next* task
+# ("Verify PyYAML") would actually fail, on the resulting ModuleNotFoundError.
+- name: Install PyYAML via pip
+  ansible.builtin.shell: |
+    pip3 install --break-system-packages --upgrade pyyaml 2>&1 | tail -5
+  changed_when: true
+
+- name: Install extra pip packages
+  ansible.builtin.shell: |
+    pip3 install --break-system-packages {{ pyyaml_extra_pip_packages }} 2>&1 | tail -20
+  when: pyyaml_extra_pip_packages | length > 0
+  changed_when: true
+
+- name: Verify PyYAML
+  ansible.builtin.shell: python3 -c "import yaml; print(yaml.__version__)"
+  register: pyyaml_check
+  changed_when: false
+
+- name: Show PyYAML version
+  ansible.builtin.debug:
+    msg: "PyYAML {{ pyyaml_check.stdout }}"

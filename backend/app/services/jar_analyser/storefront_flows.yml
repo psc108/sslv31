@@ -1,0 +1,351 @@
+# Storefront Developer Guide — Flow Definitions
+#
+# This file defines the narrative multi-step flows rendered in Section 5 of the
+# storefront guide.  It is intentionally decoupled from any specific platform
+# version: the generator resolves actual method names, path parameters, and
+# response shapes from the live JAR report at render time.
+#
+# Schema per flow:
+#   title       — displayed as the section heading (use " — " to separate number from name)
+#   description — paragraph shown above the code block
+#   steps[]:
+#     domain    — must match a key in _SERVICE_DOMAIN (Catalog, Request, Pricing,
+#                 Customers, ServiceInstances, Fulfillment)
+#     verb      — HTTP method (GET, POST, PUT, PATCH, DELETE)
+#     fragment  — substring matched against full_path; most-specific (longest) match wins
+#     label     — plain-language description used as a code comment
+#     var       — JS variable name to assign the result to
+#     poll      — JS condition string; if present, wraps the call in a polling loop
+#     events    — list of "entity/action" event names fired asynchronously by this step;
+#                 validated against the report's published_events index at render time
+#     note      — extra comment line(s) inserted before the call (use \n for multiple lines)
+
+flows:
+
+  - title: "Flow 1 — Browse the portal catalogue and build an order form"
+    description: >
+      Full browse-to-configure flow: list categories for the nav sidebar,
+      page through portal catalogue items (customer-visible, published only),
+      drill into a specific item to get its price field and service design ID,
+      then fetch the options model — the dynamic form schema the UI must render
+      before the customer can place an order.
+      All four calls are required before POST /orders is valid.
+    steps:
+      - domain: Catalog
+        verb: GET
+        fragment: /categories
+        label: Fetch category tree for the navigation sidebar
+        var: categories
+        note: "// categories[].id used as ?categoryId filter on the next call"
+
+      - domain: Catalog
+        verb: GET
+        fragment: /portal/catalog-items
+        label: Page through portal catalogue items filtered by category
+        var: catalogPage
+        note: "// ?categoryId=categories[0].id&page=0&size=20&sort=name,asc"
+
+      - domain: Catalog
+        verb: GET
+        fragment: /portal/catalog-items/{id}
+        label: "Get full PortalCatalogItemDto for the selected item (includes price field)"
+        var: catalogItem
+        note: "// catalogItem.id = catalogPage.content[0].id\n  // catalogItem.price — display to customer before they configure"
+
+      - domain: Catalog
+        verb: GET
+        fragment: /portal/catalog-items/{catalogItemId}/options-model
+        label: "Fetch SubresourceDto options model — the dynamic order-form schema"
+        var: optionsModel
+        note: "// Render optionsModel fields as form inputs; collect values for POST /orders"
+
+  - title: "Flow 2 — Compute price for selected options before ordering"
+    description: >
+      Show the customer an accurate price breakdown before they confirm.
+      First list the option sets (price variants) for the item, then POST
+      to /prices/computations with the customer's chosen option values.
+      The PriceComputationResponse.items[] array contains per-line-item
+      one-time and recurring charges. Cross-reference with the Pricing
+      service product record for the full rate card display name.
+    steps:
+      - domain: Catalog
+        verb: GET
+        fragment: /prices/catalog-items/{catalogItemId}/option-sets
+        label: "List PagedSearchResponse of option sets (price variants) for the item"
+        var: optionSetsPage
+        note: "// optionSetsPage.content[].id passed as optionSetId in the computation body"
+
+      - domain: Catalog
+        verb: POST
+        fragment: /prices/computations
+        label: "POST price computation for the customer's chosen option values"
+        var: priceResult
+        note: "// Body: { catalogItemId, optionSetId, optionValues: { <key>: <value> } }\n  // priceResult.items[]: [{ description, oneTimePrice, recurringPrice, unit }]"
+
+      - domain: Pricing
+        verb: GET
+        fragment: /products/{id}
+        label: Fetch Pricing product record for rate card display name and currency
+        var: pricingProduct
+        note: "// pricingProduct.name + priceResult.items[] = full price summary UI"
+
+  - title: "Flow 3 — Place an order and track it to completion"
+    description: >
+      Full order lifecycle: POST the order, extract the OrderItem IDs,
+      poll each item through its state machine (PENDING → IN_PROGRESS → SUCCESS / FAILURE),
+      then fetch the ActionFulfillmentDto once the item reaches a terminal state.
+      Key fields: orderItem.state, orderItem.humanReadableId (show in UI),
+      orderItem.fulfillmentId (links to Fulfillment service),
+      orderItem.attentionRequired (surface as a warning banner),
+      orderItem.slaExceeded (show SLA breach indicator).
+    steps:
+      - domain: Request
+        verb: POST
+        fragment: /orders
+        label: "Create the order — fires order/created then order/readyForFulfillment"
+        var: newOrder
+        events:
+          - order/created
+          - order/readyForFulfillment
+        note: "// Body: { customerId, dataCenterId, items: [{ catalogItemId, quantity, optionValues }] }"
+
+      - domain: Request
+        verb: GET
+        fragment: /orders/{id}
+        label: Retrieve the order to get its OrderItem IDs
+        var: order
+        note: "// order.items[].id — one per line item; iterate to poll each"
+
+      - domain: Request
+        verb: GET
+        fragment: /order-items/{id}
+        label: "Poll OrderItemInfoDto until state is SUCCESS or FAILURE"
+        var: orderItem
+        poll: "orderItem.state !== 'SUCCESS' && orderItem.state !== 'FAILURE'"
+        events:
+          - orderItem/stateUpdated
+          - orderItem/fulfillmentIdSet
+          - orderItem/finished
+        note: "// Show orderItem.humanReadableId in UI; warn if orderItem.attentionRequired"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /action-fulfillments/{id}
+        label: Fetch ActionFulfillmentDto using orderItem.fulfillmentId
+        var: actionFulfillment
+        events:
+          - actionFulfillment/stateUpdated
+        note: "// actionFulfillment.serviceInstanceId — store this; needed for Flow 8\n  // actionFulfillment.state: SUCCESS | FAILURE | IN_PROGRESS | WAITING_FOR_APPROVAL"
+
+  - title: "Flow 4 — Handle approval-gated orders"
+    description: >
+      Some service designs require manager approval before fulfillment begins.
+      Detect waitingForExternalApproval on the OrderItemInfoDto, fetch the
+      ApprovalItemDto to get the approval question and options, then PUT the
+      approver's decision. The approvalStep/changed event fires on each
+      approval step transition. After approval the order item resumes
+      its normal state machine — re-poll until SUCCESS or FAILURE.
+    steps:
+      - domain: Request
+        verb: GET
+        fragment: /order-items/{id}
+        label: "Poll order item — check waitingForExternalApproval flag"
+        var: orderItem
+        poll: "orderItem.state !== 'SUCCESS' && orderItem.state !== 'FAILURE' && !orderItem.waitingForExternalApproval"
+        note: "// Stop polling when waitingForExternalApproval === true and show approval UI"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /approval-items/{approvalItemId}
+        label: "Fetch ApprovalItemDto — contains approval question, options, and current state"
+        var: approvalItem
+        events:
+          - approvalStep/changed
+        note: "// approvalItem.id needed for the PUT below"
+
+      - domain: Fulfillment
+        verb: PUT
+        fragment: /approval-items/{approvalItemId}
+        label: "Submit approval decision — APPROVED or REJECTED"
+        var: approvalResult
+        events:
+          - approvalStep/changed
+          - orderItem/stateUpdated
+        note: "// Body: { decision: 'APPROVED', comment: 'Approved by manager' }"
+
+      - domain: Request
+        verb: GET
+        fragment: /order-items/{id}
+        label: "Re-poll order item — fulfillment resumes after approval"
+        var: orderItemFinal
+        poll: "orderItemFinal.state !== 'SUCCESS' && orderItemFinal.state !== 'FAILURE'"
+        events:
+          - orderItem/stateUpdated
+          - orderItem/finished
+        note: "// orderItemFinal.slaExceeded — true if approval delay breached SLA"
+
+  - title: "Flow 5 — Customer order dashboard with attention flags"
+    description: >
+      Build a customer-facing order dashboard: page through all orders,
+      surface any items with attentionRequired or slaExceeded set,
+      and enrich each flagged item with its fulfillment flow execution log
+      so the UI can show a readable progress timeline.
+      Key fields: orderItem.attentionRequired (show warning banner),
+      orderItem.slaExceeded (show SLA breach badge),
+      orderItem.humanReadableId (display reference),
+      flowExecution activity logs for the timeline.
+    steps:
+      - domain: Request
+        verb: GET
+        fragment: /orders
+        label: "Page through all orders for the customer, newest first"
+        var: ordersPage
+        note: "// ?customerId=<id>&sort=createdAt,desc&page=0&size=20"
+
+      - domain: Request
+        verb: GET
+        fragment: /order-items/{id}
+        label: Fetch each OrderItemInfoDto to check attentionRequired and slaExceeded
+        var: orderItem
+        note: "// Iterate ordersPage.content[].items[]; surface items where attentionRequired || slaExceeded"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /action-fulfillments/{id}
+        label: Fetch ActionFulfillmentDto for flagged items using orderItem.fulfillmentId
+        var: actionFulfillment
+        note: "// actionFulfillment.humanReadableId — show as reference in the dashboard row"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /flow-executions/{flowExecutionId}/activity-logs
+        label: Fetch PagedSearchResponse activity log for the fulfillment timeline
+        var: activityLogs
+        note: "// Render activityLogs.content[] as a chronological progress timeline in the UI"
+
+  - title: "Flow 6 — Manage customer profile, departments, and contracts"
+    description: >
+      Load the full customer account context needed for the account settings page:
+      CustomerDto (name, type — both required), the customer's profile,
+      their department hierarchy, group memberships, and active contracts.
+      ContractDto.rateCardIds links to Pricing rate cards for billing display.
+      The customer/createdOrUpdated event fires on any profile or contract change.
+    steps:
+      - domain: Customers
+        verb: GET
+        fragment: /customers/{id}
+        label: "Fetch CustomerDto — required fields: name, type"
+        var: customer
+        events:
+          - customer/createdOrUpdated
+        note: "// customer.type: INDIVIDUAL | ORGANIZATION — drives UI layout"
+
+      - domain: Customers
+        verb: GET
+        fragment: /customers/{id}/profile
+        label: "Fetch extended customer profile (contact details, preferences)"
+        var: customerProfile
+
+      - domain: Customers
+        verb: GET
+        fragment: /customers/{customerId}/departments
+        label: Fetch department hierarchy for cost-centre assignment UI
+        var: departments
+
+      - domain: Customers
+        verb: GET
+        fragment: /contracts
+        label: "List PagedSearchResponse of contracts — filter by ?customerId"
+        var: contractsPage
+        events:
+          - contract/created
+        note: "// contractsPage.content[].rateCardIds — pass to Pricing for rate card details"
+
+  - title: "Flow 7 — View active service instances and their fulfillment state"
+    description: >
+      Render the customer's 'My Services' page: list running service instances,
+      show state/substate, surface access control entries (who can manage each),
+      and link through to the ServiceFulfillmentDto for provisioning detail.
+      Required ServiceInstanceDto fields: adapterId, externalId, name, state,
+      dataCenterId, owner, ownerType.
+      Events: serviceInstance/stateUpdated fires on any lifecycle transition;
+      serviceInstance/createdOrUpdated fires on metadata changes.
+    steps:
+      - domain: ServiceInstances
+        verb: GET
+        fragment: /service-instances/{id}
+        label: "Fetch ServiceInstanceDto — state, substate, adapterId, externalId"
+        var: serviceInstance
+        events:
+          - serviceInstance/stateUpdated
+          - serviceInstance/createdOrUpdated
+        note: "// Store serviceInstance.adapterId + externalId — needed for Flow 8 upgrade-actions"
+
+      - domain: ServiceInstances
+        verb: GET
+        fragment: /service-instances/{id}/access-control-entries
+        label: "Fetch ACL entries — show 'Managed by' list in the instance detail panel"
+        var: aceList
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /service-fulfillments/{id}
+        label: Fetch ServiceFulfillmentDto for provisioning status and adapter detail
+        var: serviceFulfillment
+        events:
+          - serviceFulfillment/stateUpdated
+        note: "// serviceFulfillment.state: ACTIVE | DECOMMISSIONED | FAILED"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /flow-executions/{flowExecutionId}
+        label: Fetch FlowExecutionDto for the latest provisioning flow run
+        var: flowExecution
+        note: "// flowExecution.status — display as a progress indicator on the instance card"
+
+  - title: "Flow 8 — Raise a change or upgrade action on a running instance"
+    description: >
+      Full change-action lifecycle: discover available upgrade/change actions
+      for the instance using its adapterId + externalId (from Flow 7),
+      POST the action to the Request service, poll ActionDto until terminal,
+      then fetch the ActionFulfillmentDto for the result.
+      If the action triggers a bulk execution (e.g. multi-instance upgrade),
+      poll BulkExecutionInfoDto.status instead.
+      Events: action/created → action/stateUpdated → action/terminalStateReached.
+    steps:
+      - domain: Fulfillment
+        verb: GET
+        fragment: /service-instances/{adapterId}/{externalId}/upgrade-actions
+        label: List available upgrade/change actions using adapterId + externalId from ServiceInstanceDto
+        var: availableActions
+        note: "// availableActions[].actionDefinitionId — pass to POST /actions body"
+
+      - domain: Request
+        verb: POST
+        fragment: /actions
+        label: "Submit the change action — fires action/created and action/stateUpdated"
+        var: newAction
+        events:
+          - action/created
+          - action/stateUpdated
+        note: "// Body: { serviceInstanceId, actionDefinitionId, optionValues: { <key>: <value> } }"
+
+      - domain: Request
+        verb: GET
+        fragment: /actions/{id}
+        label: "Poll ActionDto until SUCCESS or FAILURE"
+        var: action
+        poll: "action.state !== 'SUCCESS' && action.state !== 'FAILURE' && action.state !== 'CANCELED' && action.state !== 'DENIED'"
+        events:
+          - action/stateUpdated
+          - action/terminalStateReached
+        note: "// If action.bulkExecutionId is set, also poll GET /bulk-executions/{id}/status"
+
+      - domain: Fulfillment
+        verb: GET
+        fragment: /action-fulfillments/{id}
+        label: "Fetch ActionFulfillmentDto for the completed action — contains new serviceInstanceId if reprovisioned"
+        var: actionFulfillment
+        events:
+          - actionFulfillment/stateUpdated
+        note: "// actionFulfillment.serviceInstanceId may differ from original if instance was replaced"

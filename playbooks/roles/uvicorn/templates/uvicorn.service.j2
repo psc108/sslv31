@@ -1,0 +1,26 @@
+[Unit]
+Description=Uvicorn ASGI Server
+After=network.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/opt/app/src
+ExecStart=/opt/app/venv/bin/uvicorn {{ uvicorn_app_module }} \
+    --host 0.0.0.0 \
+    --port {{ uvicorn_port }} \
+    --workers {{ uvicorn_workers }} \
+{% if uvicorn_ssl_enabled | bool %}
+    --ssl-keyfile /opt/app/ssl/server-key.pem \
+    --ssl-certfile /opt/app/ssl/server.pem \
+    --ssl-ca-certs /opt/app/ssl/ca.pem \
+{% endif %}
+    --access-log
+Restart=always
+RestartSec=5
+Environment=PATH=/opt/app/venv/bin:/usr/local/bin:/usr/bin
+Environment=PYTHONPATH=/opt/app/src
+
+[Install]
+WantedBy=multi-user.target

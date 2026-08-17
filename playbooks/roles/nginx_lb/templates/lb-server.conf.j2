@@ -1,0 +1,59 @@
+{% for u in nginx_lb_upstreams %}
+upstream {{ u.name }}-upstream {
+    server {{ u.host }}:{{ u.port }};
+    keepalive 5;
+}
+{% endfor %}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server — terminates client-facing TLS, then re-encrypts to each
+# upstream (proxy_pass https://, not http://) rather than passing traffic
+# through unterminated. Mirrors the real application's own frontend-lb/
+# backend-lb nginx configs exactly (captured via the JAR Analyser).
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/server-fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/server-key.pem;
+
+{% for u in nginx_lb_upstreams %}
+    location {{ u.path }} {
+        proxy_pass https://{{ u.name }}-upstream{{ u.path }};
+        # Verifies the upstream's cert chain against the same internal CA
+        # every host in this environment trusts (deployed by the base
+        # role — see internal_ca_path), AND that its SAN actually matches
+        # the name being dialed (proxy_ssl_name) — without this, TLS here
+        # was encryption-only: a MITM between this LB and its upstream
+        # would go uncaught since nginx never checked who it was actually
+        # talking to. u.host, not the "{{ u.name }}-upstream" block name
+        # used in proxy_pass above — base_provisioner.py issues each
+        # host's cert SAN list from its real role name/allocation, and
+        # that's what proxy_ssl_name has to match for verification to
+        # actually pass rather than fail on a hostname mismatch.
+        proxy_ssl_verify on;
+        proxy_ssl_verify_depth 2;
+        proxy_ssl_trusted_certificate {{ internal_ca_path }};
+        proxy_ssl_name {{ u.host }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+{% endfor %}
+
+    # Health check endpoint
+    location /health {
+        access_log off;
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+}

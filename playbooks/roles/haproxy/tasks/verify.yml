@@ -1,0 +1,41 @@
+---
+# Verify HAProxy TLS is working. Only the built-in default_tls frontend
+# (see tasks/main.yml — added automatically when no custom Frontends are
+# configured) has a port this check can reliably know in advance; custom
+# haproxy_frontends entries are free-text "bind" strings the operator
+# controls directly, so there's no single port to check for those.
+
+- name: "TLS_VERIFY haproxy"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.haproxy_tls_port | default(443) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"haproxy\",\"port\":{{ product_vars.haproxy_tls_port | default(443) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"haproxy\",\"port\":{{ product_vars.haproxy_tls_port | default(443) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: haproxy_tls_check
+  changed_when: false
+  failed_when: false
+  when: >
+    product_vars.haproxy_tls_enabled | default(true) | bool and
+    (product_vars.haproxy_frontends | default([]) | length == 0)
+
+- name: "TLS_OUTPUT haproxy"
+  ansible.builtin.debug:
+    msg: "{{ haproxy_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: >
+    product_vars.haproxy_tls_enabled | default(true) | bool and
+    (product_vars.haproxy_frontends | default([]) | length == 0)
+
+- name: "TLS_OUTPUT haproxy (custom frontends)"
+  ansible.builtin.debug:
+    msg: "TLS_RESULT:{\"product\":\"haproxy\",\"port\":0,\"status\":\"warning\",\"detail\":\"Custom haproxy_frontends configured — verify their TLS bind ports manually, this check only covers the built-in default frontend\"}"
+  when: >
+    product_vars.haproxy_tls_enabled | default(true) | bool and
+    (product_vars.haproxy_frontends | default([]) | length > 0)

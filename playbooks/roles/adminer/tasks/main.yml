@@ -1,0 +1,276 @@
+---
+# Adminer role — self-contained: installs its own Nginx + PHP-FPM TLS front
+# and downloads the single-file Adminer database-admin app. Deliberately
+# does NOT depend on the separately-selectable "php" catalogue product's
+# role having already run on this host — install-order across products in
+# an environment isn't guaranteed, and this mirrors the exact same pattern
+# already established by keystone (installs its own Apache directly rather
+# than relying on the "apache" product) and rabbitmq (installs its own
+# Erlang directly rather than relying on the "erlang" product). The
+# catalogue's "requires php" entry on this product is compatibility/
+# informational metadata only, matching that precedent — not a real
+# cross-role execution dependency.
+#
+# Required vars: server_cert_pem, server_key_pem, ca_chain_pem
+# Optional vars (via product_vars): adminer_server_name, adminer_listen_port,
+# adminer_default_server, adminer_version, adminer_sudo_users,
+# adminer_sudo_nopasswd, adminer_file_deployments.
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing Adminer/PHP/Nginx installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    systemctl stop 'php*-fpm' 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y nginx nginx-common 'php*' 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/nginx.conf /var/www/adminer
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Adminer/PHP/Nginx installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    systemctl stop php-fpm 2>/dev/null || true
+    dnf remove -y nginx php-fpm php-cli php-common 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/conf.d /var/www/adminer
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Fresh install ---
+
+- name: Set adminer vars from product config
+  ansible.builtin.set_fact:
+    adminer_server_name: "{{ product_vars.adminer_server_name | default(service_role + '.internal') }}"
+    adminer_listen_port: "{{ product_vars.adminer_listen_port | default(8443) }}"
+    adminer_default_server: "{{ product_vars.adminer_default_server | default('127.0.0.1') }}"
+    adminer_version: "{{ product_vars.adminer_version | default('4.8.1') }}"
+    adminer_doc_root: /var/www/adminer
+    adminer_web_user: "{{ 'www-data' if ansible_facts.os_family == 'Debian' else 'nginx' }}"
+  when: product_vars is defined
+
+- name: Install Nginx (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [nginx]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install PHP-FPM and extensions (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [php-fpm, php-mysql, php-mbstring]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Nginx (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nginx]
+  when: ansible_facts.os_family == "RedHat"
+
+# RHEL8's AppStream module list jumps straight from php:8.0 to php:8.2 (no
+# 8.1 stream exists) — see the php role's own tasks/main.yml for the exact
+# `dnf module list php` output that confirmed this against the real target
+# image, found via a real failed build, not assumed.
+- name: Enable PHP 8.2 module stream (RHEL)
+  ansible.builtin.shell: |
+    dnf module reset php -y
+    dnf module enable php:8.2 -y
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install PHP-FPM and extensions (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [php-fpm, php-mysqlnd, php-mbstring]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Discover PHP-FPM pool config path (Debian)
+  ansible.builtin.shell: find /etc/php -name www.conf -path '*fpm*' 2>/dev/null | head -1
+  register: php_fpm_pool_debian
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Discover PHP-FPM service name (Debian)
+  ansible.builtin.shell: systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1}' | head -1
+  register: php_fpm_service_debian
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Set PHP-FPM facts
+  ansible.builtin.set_fact:
+    php_fpm_pool_conf: "{{ php_fpm_pool_debian.stdout | trim if ansible_facts.os_family == 'Debian' else '/etc/php-fpm.d/www.conf' }}"
+    php_fpm_service: "{{ php_fpm_service_debian.stdout | trim if ansible_facts.os_family == 'Debian' else 'php-fpm' }}"
+
+- name: Configure PHP-FPM pool to listen on TCP
+  ansible.builtin.lineinfile:
+    path: "{{ php_fpm_pool_conf }}"
+    regexp: '^listen\s*='
+    line: "listen = 127.0.0.1:9000"
+  notify: restart php-fpm
+
+- name: Enable and start PHP-FPM
+  ansible.builtin.service:
+    name: "{{ php_fpm_service }}"
+    state: started
+    enabled: true
+
+# --- Remove default nginx site configs ---
+
+- name: Remove default nginx site configs (Debian)
+  ansible.builtin.shell: |
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Remove default nginx configs (RHEL)
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d/default.conf
+    state: absent
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Deploy TLS certificates ---
+
+- name: Create nginx SSL directory
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+- name: Deploy Adminer server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}\n{{ ca_chain_pem }}"
+    dest: /etc/nginx/ssl/adminer-fullchain.pem
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy Adminer private key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/nginx/ssl/adminer-key.pem
+    mode: "0600"
+  notify: reload nginx
+
+# --- Download Adminer and deploy a default-server wrapper ---
+
+- name: Create Adminer document root
+  ansible.builtin.file:
+    path: "{{ adminer_doc_root }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ adminer_web_user }}"
+    group: "{{ adminer_web_user }}"
+
+- name: Download Adminer
+  ansible.builtin.get_url:
+    url: "https://github.com/vrana/adminer/releases/download/v{{ adminer_version }}/adminer-{{ adminer_version }}.php"
+    dest: "{{ adminer_doc_root }}/adminer.php"
+    mode: "0644"
+    owner: "{{ adminer_web_user }}"
+
+# Deployed for connectSsl() below — any MySQL host provisioned by this
+# app's own mysql role enforces require_secure_transport=ON (confirmed live:
+# Adminer's mysqli connection was rejected outright with "Connections using
+# insecure transport are prohibited" until this was wired up), and every
+# cert this app issues shares the same CA, so validating against it works
+# whether MySQL is colocated on this host or reached remotely.
+- name: Deploy Adminer's MySQL CA trust file
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: "{{ adminer_doc_root }}/mysql-ca.pem"
+    mode: "0644"
+    owner: "{{ adminer_web_user }}"
+
+# Adminer's credentials() plugin hook only drives auto-login, not the
+# login form's displayed default value (confirmed by live-testing the
+# rendered page — the "Server" field still came out value="" with only
+# credentials() overridden; that hook only drives auto-login). Wrapping the
+# whole response in ob_start()/ob_get_clean() to string-replace it was tried
+# first and rejected — it broke adminer.php outright (a real "array offset
+# on null" PHP warning, empty response body), confirmed via the actual
+# downloaded adminer.php source: loginForm() calls
+# $this->loginFormField($name, $heading, $value) per field, so overriding
+# that one designated extension point for just the "server" field is both
+# the officially-intended mechanism and doesn't touch adminer.php's own
+# output/execution flow at all.
+#
+# connectSsl() is the bundled mysqli driver's own real hook (confirmed by
+# grepping the downloaded adminer.php itself — it calls mysqli_ssl_set()
+# with connectSsl()'s return value and only requests MYSQLI_CLIENT_SSL when
+# that return value is truthy), not a guess. Only the CA is set — no client
+# key/cert — since MySQL's require_secure_transport only mandates the
+# connection be encrypted, not client-certificate (mutual TLS) auth.
+#
+# Deployed as index.php (the download itself lands as adminer.php) so the
+# wrapper is what actually gets served.
+- name: Deploy Adminer default-server + MySQL TLS wrapper
+  ansible.builtin.copy:
+    content: |
+      <?php
+      function adminer_object() {
+          class AdminerSoftware extends Adminer {
+              function loginFormField($name, $heading, $value) {
+                  if ($name == 'server') {
+                      $value = str_replace('value=""', 'value="{{ adminer_default_server }}"', $value);
+                  }
+                  return $heading . $value;
+              }
+              function connectSsl() {
+                  return array('key' => '', 'cert' => '', 'ca' => __DIR__ . '/mysql-ca.pem');
+              }
+          }
+          return new AdminerSoftware;
+      }
+      include "./adminer.php";
+    dest: "{{ adminer_doc_root }}/index.php"
+    mode: "0644"
+    owner: "{{ adminer_web_user }}"
+
+- name: Deploy Adminer health check file
+  ansible.builtin.copy:
+    content: "ok"
+    dest: "{{ adminer_doc_root }}/health"
+    mode: "0644"
+    owner: "{{ adminer_web_user }}"
+
+# --- Deploy nginx vhost ---
+
+- name: Deploy Adminer nginx vhost
+  ansible.builtin.template:
+    src: adminer-ssl.conf.j2
+    dest: "{{ '/etc/nginx/sites-available/adminer.conf' if ansible_facts.os_family == 'Debian' else '/etc/nginx/conf.d/adminer.conf' }}"
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable Adminer nginx vhost (Debian)
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/adminer.conf
+    dest: /etc/nginx/sites-enabled/adminer.conf
+    state: link
+  when: ansible_facts.os_family == "Debian"
+  notify: reload nginx
+
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Enable and start nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.adminer_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.adminer_sudo_nopasswd | default(false) }}"
+  when: (product_vars.adminer_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.adminer_file_deployments }}"
+  when: (product_vars.adminer_file_deployments | default([])) | length > 0

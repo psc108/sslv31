@@ -1,0 +1,115 @@
+FROM registry.access.redhat.com/ubi8/ubi-init:8.10
+
+ENV container=docker
+
+# ubi8/ubi-init ships systemd + dnf already; install SSH and the tooling the
+# Ansible roles need. dnf-plugins-core, createrepo_c and nfs-utils are baked
+# in here rather than installed live by the roles that need them — mirrors
+# why Dockerfile.target pre-installs dpkg-dev for the Ubuntu image: hosts
+# that need these need them before any local package cache exists to serve
+# them from (createrepo_c on the pkg-cache host) or need them on nearly
+# every host in the golden path template (nfs-utils, for nfs_client), so
+# they have to come from the image, not a live dnf install.
+#
+# Neither createrepo_c nor nfs-utils is in any of UBI8's free-access repos
+# (confirmed by direct search — not in BaseOS/AppStream/EPEL8; the
+# CodeReady Builder repo resolves to near-empty metadata without an actual
+# Red Hat subscription, and nfs-utils specifically is a package Red Hat
+# excludes from UBI's own trimmed BaseOS entirely, unlike full RHEL8).
+# Both are pulled from CentOS Stream 8's public vault archive instead
+# (binary-compatible EL8 RPMs, no subscription wall) — createrepo_c from
+# its AppStream, nfs-utils from its BaseOS. The vault repos are added, used
+# for these two installs, then fully removed — not needed at runtime, and
+# CentOS Stream 8 itself is EOL, so leaving them registered would just be
+# live repos pointed at an unmaintained mirror.
+# dnf upgrade runs *before* the CentOS vault installs below, not after:
+# the base image's own package versions (e.g. e2fsprogs-libs) can otherwise
+# conflict with what the vault repo wants to pull in as a dependency of
+# nfs-utils (found via a real build failure — "cannot install both
+# libcom_err-...-7.el8_10 from ubi-8-baseos-rpms and libcom_err-...-5.el8
+# from @System"), since the vault snapshot and UBI8's own current repos
+# aren't necessarily version-aligned. Upgrading to UBI8's latest first means
+# there's nothing stale left for the vault resolution to conflict with.
+# openssl (the CLI, not just libssl) isn't pulled in by anything else here
+# and every host needs it — the base role's own PKCS12/keystore build steps
+# (run on every host regardless of product) shell out to it directly, found
+# via a real build failing with a plain "openssl: command not found".
+RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm \
+    && dnf install -y --setopt=install_weak_deps=False \
+    openssh-server \
+    python3 \
+    python3-dnf \
+    python3.11 \
+    sudo \
+    curl \
+    ca-certificates \
+    dbus \
+    dnf-plugins-core \
+    openssl \
+    && dnf upgrade -y \
+    && dnf clean all
+
+# createrepo_c and nfs-utils aren't in any of UBI8's free-access repos
+# (confirmed by direct search — not in BaseOS/AppStream/EPEL8; the
+# CodeReady Builder repo resolves to near-empty metadata without an actual
+# Red Hat subscription, and nfs-utils specifically is a package Red Hat
+# excludes from UBI's own trimmed BaseOS entirely, unlike full RHEL8).
+# Baked into the image rather than installed live by the roles that need
+# them — mirrors why Dockerfile.target pre-installs dpkg-dev for the Ubuntu
+# image: createrepo_c is needed on the pkg-cache host before any local
+# package cache exists to serve it from, and nfs-utils is needed on nearly
+# every host in the golden path template (nfs_client).
+#
+# Both are pulled from CentOS Stream 8's public vault archive instead
+# (binary-compatible EL8 RPMs, no subscription wall) — createrepo_c from
+# its AppStream, nfs-utils from its BaseOS. The vault repos are added, used
+# for these two installs, then fully removed — not needed at runtime, and
+# CentOS Stream 8 itself is EOL, so leaving them registered would just be
+# live repos pointed at an unmaintained mirror.
+RUN printf '[centos8-baseos-vault]\nname=CentOS 8 Stream BaseOS (vault, nfs-utils only)\nbaseurl=https://vault.centos.org/8-stream/BaseOS/x86_64/os/\nenabled=1\ngpgcheck=0\nsslverify=0\n' > /etc/yum.repos.d/centos8-baseos-vault.repo \
+    && printf '[centos8-appstream-vault]\nname=CentOS 8 Stream AppStream (vault, createrepo_c only)\nbaseurl=https://vault.centos.org/8-stream/AppStream/x86_64/os/\nenabled=1\ngpgcheck=0\nsslverify=0\n' > /etc/yum.repos.d/centos8-appstream-vault.repo \
+    && dnf install -y --setopt=install_weak_deps=False --nogpgcheck --allowerasing createrepo_c nfs-utils \
+    && rm -f /etc/yum.repos.d/centos8-baseos-vault.repo /etc/yum.repos.d/centos8-appstream-vault.repo \
+    && dnf clean all
+
+# Deliberately NOT running a further `dnf upgrade --allowerasing` here.
+# UBI8's own libcom_err has a newer build (-7) than the e2fsprogs-libs (-5)
+# that shipped in the base image and that nfs-utils above ends up
+# depending on transitively — upgrading libcom_err needs e2fsprogs-libs
+# removed (no newer e2fsprogs-libs exists anywhere, confirmed via direct
+# search across every enabled repo), and confirmed via direct
+# reproduction that dnf's solver takes nfs-utils down as collateral when
+# that happens, even under --setopt=protected_packages=nfs-utils ("The
+# operation would result in removing the following protected packages").
+# There's no dnf-level way to have both nfs-utils and the newer libcom_err
+# on this image, so roles must avoid needing the newer one instead — e.g.
+# the keystone role skips openssl-devel/krb5-devel's dependency chain
+# entirely by relying on cryptography's prebuilt manylinux wheel rather
+# than a source build (confirmed: installing httpd-devel + gcc + friends
+# without openssl-devel doesn't touch libcom_err at all, and nfs-utils
+# survives intact).
+
+# RHEL8's system /usr/bin/python3 is 3.6 — too old for modern ansible-core's
+# module code (needs Python 3.7+'s `from __future__ import annotations`).
+# python3.11 above is installed for Ansible to use instead of (not replacing)
+# the system python3, since RHEL8's own dnf/yum tooling is tied to 3.6 —
+# see inventory_service.py's ansible_python_interpreter wiring for RHEL hosts.
+
+# Configure SSH
+RUN mkdir -p /run/sshd /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+
+# Enable SSH service to start on boot (unit is "sshd" on RHEL, not "ssh")
+RUN systemctl enable sshd
+
+# Copy entrypoint that injects SSH keys then execs systemd
+COPY docker/target-entrypoint-rhel8.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/entrypoint.sh"]

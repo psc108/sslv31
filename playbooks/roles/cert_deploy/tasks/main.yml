@@ -1,0 +1,89 @@
+---
+# cert_deploy role — deploy updated TLS certificates to a host and reload
+# the relevant service. Called by cert-deploy.yml after cert_renew re-issues.
+#
+# Required hostvars (injected by inventory_service.py step 3.5):
+#   cert_crt        — path to server.crt on the Build Manager host
+#   cert_key        — path to server.key on the Build Manager host
+#   cert_chain      — path to fullchain.pem on the Build Manager host
+#   ca_chain        — path to ca-chain.pem on the Build Manager host
+#   truststore_jks  — path to truststore.jks on the Build Manager host
+#   service_role    — nginx | mysql | rabbitmq | keystone | backend | frontend | generic
+
+# ── Read cert files from Build Manager disk ──────────────────────────────────
+
+- name: Read server certificate
+  ansible.builtin.slurp:
+    src: "{{ cert_crt }}"
+  register: _cert_crt_b64
+  delegate_to: localhost
+
+- name: Read server key
+  ansible.builtin.slurp:
+    src: "{{ cert_key }}"
+  register: _cert_key_b64
+  delegate_to: localhost
+
+- name: Read fullchain
+  ansible.builtin.slurp:
+    src: "{{ cert_chain }}"
+  register: _cert_chain_b64
+  delegate_to: localhost
+
+- name: Read CA chain
+  ansible.builtin.slurp:
+    src: "{{ ca_chain }}"
+  register: _ca_chain_b64
+  delegate_to: localhost
+
+- name: Set cert content facts
+  ansible.builtin.set_fact:
+    _cert_pem: "{{ _cert_crt_b64.content | b64decode }}"
+    _key_pem: "{{ _cert_key_b64.content | b64decode }}"
+    _chain_pem: "{{ _cert_chain_b64.content | b64decode }}"
+    _ca_pem: "{{ _ca_chain_b64.content | b64decode }}"
+
+# ── Common: update system trust store ────────────────────────────────────────
+
+- name: Install CA into system trust store (Debian/Ubuntu)
+  ansible.builtin.copy:
+    content: "{{ _ca_pem }}"
+    dest: /usr/local/share/ca-certificates/certmanager-ca.crt
+    mode: "0644"
+  notify: update-ca-certificates
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install CA into system trust store (RHEL)
+  ansible.builtin.copy:
+    content: "{{ _ca_pem }}"
+    dest: /etc/pki/ca-trust/source/anchors/certmanager-ca.crt
+    mode: "0644"
+  notify: update-ca-trust
+  when: ansible_facts.os_family == "RedHat"
+
+# ── Service-specific cert deployment ─────────────────────────────────────────
+
+- name: Deploy certs for nginx / frontend
+  ansible.builtin.include_tasks: nginx.yml
+  when: service_role in ['nginx', 'frontend']
+
+- name: Deploy certs for mysql
+  ansible.builtin.include_tasks: mysql.yml
+  when: service_role == 'mysql'
+
+- name: Deploy certs for rabbitmq
+  ansible.builtin.include_tasks: rabbitmq.yml
+  when: service_role == 'rabbitmq'
+
+- name: Deploy certs for keystone
+  ansible.builtin.include_tasks: keystone.yml
+  when: service_role == 'keystone'
+
+- name: Deploy certs for backend / generic
+  ansible.builtin.include_tasks: generic.yml
+  when: service_role in ['backend', 'generic']
+
+# ── Flush handlers so services reload before playbook exits ──────────────────
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

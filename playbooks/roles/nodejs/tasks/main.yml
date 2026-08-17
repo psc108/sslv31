@@ -1,0 +1,95 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    nodejs_version: "{{ product_vars.nodejs_version | default('20') }}"
+
+- name: Check for cached Node.js tarball
+  ansible.builtin.stat:
+    path: /certmanager-data/pkg-cache/bin/node-v{{ nodejs_version }}-linux-x64.tar.xz
+  register: nodejs_cache
+
+- name: Purge existing Node.js installation (Debian)
+  ansible.builtin.shell: |
+    apt-get purge -y nodejs npm 2>/dev/null || true
+    rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
+    rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/keyrings/nodesource.gpg
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Node.js installation (RHEL)
+  ansible.builtin.shell: |
+    dnf remove -y nodejs npm 2>/dev/null || true
+    rm -rf /usr/local/lib/node_modules /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx
+    rm -f /etc/yum.repos.d/nodesource-nodejs.repo /etc/yum.repos.d/nodesource-nsolid.repo
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Offline install from cached tarball ---
+
+- name: Install Node.js from local cache tarball
+  when: nodejs_cache.stat.exists
+  block:
+    - name: Extract Node.js tarball
+      ansible.builtin.unarchive:
+        src: /certmanager-data/pkg-cache/bin/node-v{{ nodejs_version }}-linux-x64.tar.xz
+        dest: /usr/local
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+      changed_when: true
+
+# --- Network install fallback ---
+
+- name: Install Node.js from NodeSource (network fallback, Debian)
+  when: not nodejs_cache.stat.exists and ansible_facts.os_family == "Debian"
+  ansible.builtin.shell: |
+    apt-get install -y ca-certificates curl gnupg >/dev/null 2>&1
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ nodejs_version }}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+    apt-get update >/dev/null 2>&1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+    if ! command -v npm &>/dev/null; then
+      apt-get install -y npm 2>/dev/null || corepack enable 2>/dev/null || true
+    fi
+  changed_when: true
+
+# Same content NodeSource's own setup_{{ version }}.x script generates
+# (https://rpm.nodesource.com/setup_20.x et al) — written directly here
+# rather than a live curl|bash, matching every other external-repo addition
+# in this playbook set. Confirmed installable cleanly alongside the
+# vault-sourced nfs-utils baked into the RHEL8 image (no conflict, unlike
+# openssl-devel's krb5-devel chain in the keystone role).
+- name: Add NodeSource yum repo (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [nodesource-nodejs]
+      name=Node.js Packages for Linux RPM based distros - x86_64
+      baseurl=https://rpm.nodesource.com/pub_{{ nodejs_version }}.x/nodistro/nodejs/x86_64
+      priority=9
+      enabled=1
+      gpgcheck=1
+      gpgkey=https://rpm.nodesource.com/gpgkey/ns-operations-public.key
+      module_hotfixes=1
+    dest: /etc/yum.repos.d/nodesource-nodejs.repo
+    mode: "0644"
+  when: not nodejs_cache.stat.exists and ansible_facts.os_family == "RedHat"
+
+- name: Install Node.js from NodeSource (network fallback, RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nodejs]
+  when: not nodejs_cache.stat.exists and ansible_facts.os_family == "RedHat"
+
+- name: Verify Node.js installation
+  ansible.builtin.shell: node --version
+  register: node_check
+  changed_when: false
+
+- name: Check npm version
+  ansible.builtin.shell: npm --version 2>/dev/null || echo "not installed"
+  register: npm_check
+  changed_when: false
+
+- name: Show installed versions
+  ansible.builtin.debug:
+    msg: "Node.js {{ node_check.stdout }}, npm {{ npm_check.stdout }}"

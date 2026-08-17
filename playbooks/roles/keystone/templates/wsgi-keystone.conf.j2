@@ -1,0 +1,28 @@
+Listen {{ keystone_port }}
+
+<VirtualHost *:{{ keystone_port }}>
+    ServerName {{ ansible_host }}
+
+    SSLEngine on
+    SSLCertificateFile /etc/apache2/ssl/server.pem
+    SSLCertificateKeyFile /etc/apache2/ssl/server-key.pem
+    SSLCACertificateFile /etc/apache2/ssl/ca.pem
+
+    SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1
+    SSLCipherSuite HIGH:!aNULL:!MD5
+
+    WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP} python-home=/opt/keystone/venv python-path=/opt/keystone/venv/lib/python{{ py_version.stdout }}/site-packages
+    WSGIProcessGroup keystone-public
+    WSGIScriptAlias / /opt/keystone/venv/bin/keystone-wsgi-public
+    WSGIApplicationGroup %{GLOBAL}
+    WSGIPassAuthorization On
+
+    <Directory /opt/keystone/venv/bin>
+        Require all granted
+    </Directory>
+
+    ErrorLog /var/log/keystone/apache-error.log
+    CustomLog /var/log/keystone/apache-access.log combined
+
+    Header always set Strict-Transport-Security "max-age=63072000"
+</VirtualHost>

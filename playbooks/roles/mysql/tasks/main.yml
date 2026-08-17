@@ -1,0 +1,343 @@
+---
+# MySQL role — installs MySQL, configures TLS, sets passwords, creates users and databases.
+# Purges any existing installation first to guarantee a clean state.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    mysql_root_password: "{{ product_vars.mysql_root_password | default('root') }}"
+    mysql_bind_address: "{{ product_vars.mysql_bind_address | default('0.0.0.0') }}"
+    mysql_port: "{{ product_vars.mysql_port | default(3306) }}"
+    mysql_databases: "{{ product_vars.mysql_databases | default([]) }}"
+    mysql_users: "{{ product_vars.mysql_users | default([]) }}"
+    mysql_allow_remote_root: "{{ product_vars.mysql_allow_remote_root | default(false) }}"
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing MySQL installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop mysql 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y mysql-server mysql-client mysql-common 2>/dev/null || true
+    rm -rf /var/lib/mysql /etc/mysql/ssl /root/.my.cnf /etc/mysql/mysql.conf.d/ssl.cnf
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing MySQL installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop mysqld 2>/dev/null || true
+    dnf remove -y mysql-community-server mysql-community-client 2>/dev/null || true
+    rm -rf /var/lib/mysql /etc/mysql/ssl /root/.my.cnf /etc/my.cnf.d/ssl.cnf
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Fresh install ---
+
+- name: Install MySQL Server
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [mysql-server, mysql-client]
+  when: ansible_facts.os_family == "Debian"
+
+# RHEL8's own repos don't carry real MySQL at all — UBI8's AppStream has no
+# "mysql" module stream (confirmed via direct search: "No matching Modules
+# to list"), only MariaDB. Real MySQL needs Oracle's own yum repo.
+- name: Add MySQL yum repo (RHEL)
+  # dev.mysql.com/get/... is a browser-facing download page — a plain HTTP
+  # client fetch of it 403s (confirmed via a real run: Ansible's dnf module
+  # got "HTTP Error 403: Forbidden" from it, while a normal curl request to
+  # the same URL got a clean redirect). Using the actual file host
+  # (repo.mysql.com) it redirects to avoids that entirely.
+  ansible.builtin.dnf:
+    name: https://repo.mysql.com/mysql80-community-release-el8-9.noarch.rpm
+    state: present
+    disable_gpg_check: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Import MySQL GPG key (RHEL)
+  ansible.builtin.rpm_key:
+    key: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+    state: present
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install MySQL Server (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [mysql-community-server, mysql-community-client]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Create MySQL SSL directory
+  ansible.builtin.file:
+    path: /etc/mysql/ssl
+    state: directory
+    mode: "0750"
+    owner: mysql
+    group: mysql
+
+- name: Deploy MySQL server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/mysql/ssl/server-cert.pem
+    mode: "0644"
+    owner: mysql
+    group: mysql
+
+- name: Deploy MySQL server key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/mysql/ssl/server-key.pem
+    mode: "0600"
+    owner: mysql
+    group: mysql
+
+- name: Deploy MySQL CA certificate
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/mysql/ssl/ca.pem
+    mode: "0644"
+    owner: mysql
+    group: mysql
+
+- name: Ensure MySQL is running (Debian)
+  ansible.builtin.service:
+    name: mysql
+    state: started
+    enabled: true
+  when: ansible_facts.os_family == "Debian"
+
+# Retries rather than a single ansible.builtin.service call: on a fresh
+# install, mysqld_pre_systemd's ExecStartPre runs `mysqld --initialize` as
+# a genuinely separate one-shot phase before the real long-running daemon
+# starts — found via a real run where that first phase got interrupted
+# ("Received SHUTDOWN from user <via user signal>" mid-initialize in
+# mysqld's own log) and Ansible reported "Job for mysqld.service canceled",
+# but a bare `systemctl start mysqld` moments later on the same host
+# succeeded immediately with no other change. Same class of
+# transient-after-fresh-install race resilient_apt_install.yml/keystone's
+# import retry already handle elsewhere in this playbook set.
+- name: Ensure MySQL is running (RHEL)
+  ansible.builtin.shell: |
+    systemctl enable mysqld
+    systemctl start mysqld
+  register: mysql_start_result
+  until: mysql_start_result.rc == 0
+  retries: 5
+  delay: 5
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Set root password ---
+# Debian's mysql-server ships with passwordless auth_socket root access on a
+# fresh install — no packaging-level password policy at all. Oracle's own
+# RPM build (used for RHEL, since RHEL8's own repos have no real MySQL)
+# behaves completely differently: it generates a random temporary root
+# password into the error log and enables the validate_password component,
+# which would reject a simple password like this role's own "root" default
+# outright. Extracting the temp password and dropping validate_password
+# (matching Debian's equally-permissive default here, not a security
+# hardening decision either way) keeps both OS branches landing at the same
+# end state.
+
+- name: Set root password (Debian)
+  ansible.builtin.shell: |
+    mysql --socket=/var/run/mysqld/mysqld.sock -u root \
+      -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '{{ mysql_root_password }}'; FLUSH PRIVILEGES;"
+  no_log: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Wait for MySQL temporary root password in log (RHEL)
+  ansible.builtin.shell: |
+    set -o pipefail
+    grep -oP '(?<=temporary password is generated for root@localhost: ).*' /var/log/mysqld.log | tail -1
+  args:
+    executable: /bin/bash
+  register: mysql_temp_password
+  until: mysql_temp_password.stdout | length > 0
+  retries: 15
+  delay: 2
+  changed_when: false
+  no_log: true
+  when: ansible_facts.os_family == "RedHat"
+
+# Written to a restricted temp file rather than referenced directly in the
+# tasks below: no_log on the task above also censors the registered result
+# for every *later* task that references it directly, which is exactly
+# what hid a real failure here before (a golden-path template using this
+# role's own weak "root" default password — validate_password rejects it,
+# and rejects it *before* the UNINSTALL COMPONENT half of a combined
+# ALTER+UNINSTALL statement ever runs, so the two need separating too, not
+# just the no_log fix — see the two tasks below).
+- name: Write MySQL temporary root password to a restricted temp file (RHEL)
+  ansible.builtin.copy:
+    content: "{{ mysql_temp_password.stdout }}"
+    dest: /run/mysql_temp_pw
+    mode: "0600"
+    owner: root
+    group: root
+  no_log: true
+  when: ansible_facts.os_family == "RedHat"
+
+# A fresh connection authenticated with the temporary password is in
+# MySQL's "expired password" sandbox mode, which only permits an ALTER USER
+# statement as the *first* thing it runs — found via a real failure trying
+# to run UNINSTALL COMPONENT first: "ERROR 1820 (HY000): You must reset
+# your password using ALTER USER statement before executing this
+# statement." So the password has to be set (exiting sandbox mode) before
+# validate_password can be dropped at all — and it has to be set to
+# something validate_password itself will accept, which is why this can't
+# go straight to mysql_root_password if that's something as simple as this
+# role's own "root" default. This bootstrap password is fixed (not
+# secret — it exists for a few milliseconds within this same play before
+# being overwritten below, on a host nothing external can reach yet), just
+# strong enough to satisfy validate_password's default policy.
+- name: Set a temporary strong password to exit expired-password mode (RHEL)
+  ansible.builtin.shell: |
+    mysql --connect-expired-password -u root -p"$(cat /run/mysql_temp_pw)" \
+      -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'Tmp-Bootstrap-Pw-9x!Q';"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Drop validate_password (RHEL)
+  ansible.builtin.shell: |
+    mysql -u root -p'Tmp-Bootstrap-Pw-9x!Q' \
+      -e "UNINSTALL COMPONENT 'file://component_validate_password';"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Set desired root password now that validate_password is gone (RHEL)
+  ansible.builtin.shell: |
+    mysql -u root -p'Tmp-Bootstrap-Pw-9x!Q' \
+      -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}'; FLUSH PRIVILEGES;"
+  no_log: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Remove MySQL temporary root password temp file (RHEL)
+  ansible.builtin.file:
+    path: /run/mysql_temp_pw
+    state: absent
+  when: ansible_facts.os_family == "RedHat"
+
+# Socket path differs: Debian's mysql-server uses /var/run/mysqld/mysqld.sock,
+# Oracle's RPM build (used on RHEL) defaults to /var/lib/mysql/mysql.sock —
+# confirmed via a real install (RHEL8's own /etc/my.cnf already has the
+# correct path baked in by the package; this file just needs to match it).
+- name: Create .my.cnf for subsequent commands (Debian)
+  ansible.builtin.copy:
+    content: |
+      [client]
+      user=root
+      password={{ mysql_root_password }}
+      socket=/var/run/mysqld/mysqld.sock
+    dest: /root/.my.cnf
+    mode: "0600"
+  no_log: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Create .my.cnf for subsequent commands (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [client]
+      user=root
+      password={{ mysql_root_password }}
+      socket=/var/lib/mysql/mysql.sock
+    dest: /root/.my.cnf
+    mode: "0600"
+  no_log: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Enable TLS ---
+
+- name: Configure MySQL TLS and bind settings (Debian)
+  ansible.builtin.copy:
+    content: |
+      [mysqld]
+      ssl-ca=/etc/mysql/ssl/ca.pem
+      ssl-cert=/etc/mysql/ssl/server-cert.pem
+      ssl-key=/etc/mysql/ssl/server-key.pem
+      require_secure_transport=ON
+      bind-address={{ mysql_bind_address }}
+      port={{ mysql_port }}
+    dest: /etc/mysql/mysql.conf.d/ssl.cnf
+    mode: "0644"
+  notify: restart mysql
+  when: ansible_facts.os_family == "Debian"
+
+# Not /etc/my.cnf.d/ (that's a RHEL/MariaDB-packaging convention, not
+# something Oracle's own RPM build honors) — confirmed via a real install:
+# `mysqld --verbose --help` shows its compiled default config search order
+# as literally "/etc/my.cnf /etc/mysql/my.cnf /usr/etc/my.cnf ~/.my.cnf",
+# no my.cnf.d anywhere, and /etc/my.cnf ships with no `!includedir` line
+# either. A file dropped in my.cnf.d was silently never read at all — TLS
+# still "worked" (have_ssl=YES) but only because MySQL auto-generates its
+# own self-signed fallback cert when none is configured, not because these
+# settings took effect; require_secure_transport stayed OFF and a plaintext
+# TCP connection was accepted despite the file saying ON. /etc/mysql/my.cnf
+# IS in the real search list, and the directory already exists (created by
+# "Create MySQL SSL directory" above), so write straight there instead.
+- name: Configure MySQL TLS and bind settings (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [mysqld]
+      ssl-ca=/etc/mysql/ssl/ca.pem
+      ssl-cert=/etc/mysql/ssl/server-cert.pem
+      ssl-key=/etc/mysql/ssl/server-key.pem
+      require_secure_transport=ON
+      bind-address={{ mysql_bind_address }}
+      port={{ mysql_port }}
+    dest: /etc/mysql/my.cnf
+    mode: "0644"
+  notify: restart mysqld
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Flush handlers to apply TLS config
+  ansible.builtin.meta: flush_handlers
+
+# --- Optional remote root access ---
+# Off by default: a fresh install only ever grants 'root'@'localhost', so
+# root is unreachable from any other host (e.g. a paired Adminer container)
+# even with the correct password — MySQL matches accounts by user *and*
+# origin host, not password alone. This mirrors the mysql_users grant
+# pattern below but for root itself, for stacks that genuinely want
+# browser-based remote admin access (e.g. mysql+adminer test pairings).
+- name: Grant root remote access (opt-in)
+  ansible.builtin.shell: |
+    mysql --ssl-mode=REQUIRED -e "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY '{{ mysql_root_password }}';"
+    mysql --ssl-mode=REQUIRED -e "GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' WITH GRANT OPTION;"
+    mysql --ssl-mode=REQUIRED -e "FLUSH PRIVILEGES;"
+  changed_when: true
+  no_log: true
+  when: mysql_allow_remote_root | bool
+
+# --- Create databases and users ---
+
+- name: Create databases
+  ansible.builtin.shell: |
+    mysql --ssl-mode=REQUIRED -e "CREATE DATABASE IF NOT EXISTS \`{{ item.name }}\`;"
+  loop: "{{ mysql_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  when: mysql_databases | length > 0
+
+- name: Create users with privileges
+  ansible.builtin.shell: |
+    mysql --ssl-mode=REQUIRED -e "CREATE USER IF NOT EXISTS '{{ item.name }}'@'{{ item.host | default('%') }}' IDENTIFIED BY '{{ item.password }}';"
+    mysql --ssl-mode=REQUIRED -e "GRANT {{ item.priv.split(':')[1] | default('USAGE') }} ON {{ item.priv.split(':')[0] | default('*.*') }} TO '{{ item.name }}'@'{{ item.host | default('%') }}';"
+    mysql --ssl-mode=REQUIRED -e "FLUSH PRIVILEGES;"
+  loop: "{{ mysql_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+  when: mysql_users | length > 0
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.mysql_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.mysql_sudo_nopasswd | default(false) }}"
+  when: (product_vars.mysql_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.mysql_file_deployments }}"
+  when: (product_vars.mysql_file_deployments | default([])) | length > 0

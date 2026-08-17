@@ -1,0 +1,1181 @@
+key: 'Composite::2a339d59-9f54-4af0-bdaf-53b946cc7da0'
+version: 0.0.2
+purpose: FULFILLMENT
+dependencies:
+  - designKey: 'MSVxvRA::W2K19'
+    designId: 'global:BLUEPRINT:BaseVM - W2019:1'
+    adapterId: VRA
+  - designKey: 'MSVxvRA::Delete'
+    designId: 'global:OPERATION:delete_deployment'
+    adapterId: VRA
+  - designKey: 'MSVxvRA::Action'
+    designId: 'global:OPERATION:get_deployment_actions'
+    adapterId: VRA
+  - designKey: 'MSVxvRA::DeploymentGet'
+    designId: 'global:OPERATION:get_deployment'
+    adapterId: VRA
+  - designKey: 'MSVxvRA::DeploymentResourceAction'
+    designId: 'global:OPERATION:get_deployment_resource_actions'
+    adapterId: VRA
+  - designKey: 'MSVxvRA::Execute'
+    designId: 'global:OPERATION:execute_action'
+    adapterId: VRA
+globalOptionsModel:
+  options: []
+  optionGroups: []
+customerOptionsModel:
+  options: []
+  optionGroups: []
+flows:
+  - type: CREATE
+    optionsModel:
+      options: []
+      optionImports:
+        - designKey: 'MSVxvRA::W2K19'
+          optionIdPrefix: ''
+          options:
+            - id: x_deploymentName
+            - id: x_description
+            - id: x_project
+            - id: customer
+              name:
+                en-US: Customer
+              type: TEXT_INPUT
+              hidden: true
+              requiredExpression: 'false'
+              availableValues: []
+              overrideAvailableValues: []
+              fileExtensions: []
+              fieldsToNullify: []
+              metadata: []
+            - id: VM_IMAGE
+              description:
+                en-US: Operating System
+              type: DROPDOWN_LIST
+              editableExpression: 'false'
+              availableValues: []
+              overrideAvailableValues: []
+              fieldsToNullify:
+                - availableValues
+              metadata: []
+            - id: VM_CPU_COUNT
+              type: DROPDOWN_LIST
+              availableValues:
+                - id: '1'
+                  name:
+                    en-US: '1'
+                - id: '2'
+                  name:
+                    en-US: '2'
+                - id: '4'
+                  name:
+                    en-US: '4'
+                - id: '8'
+                  name:
+                    en-US: '8'
+                - id: '12'
+                  name:
+                    en-US: '12'
+                - id: '16'
+                  name:
+                    en-US: '16'
+                - id: '32'
+                  name:
+                    en-US: '32'
+                - id: '64'
+                  name:
+                    en-US: '64'
+                - id: '128'
+                  name:
+                    en-US: '128'
+            - id: VM_MEMORY
+              type: DROPDOWN_LIST
+              availableValues:
+                - id: '2'
+                  name:
+                    en-US: '2'
+                - id: '4'
+                  name:
+                    en-US: '4'
+                - id: '8'
+                  name:
+                    en-US: '8'
+                - id: '16'
+                  name:
+                    en-US: '16'
+                - id: '32'
+                  name:
+                    en-US: '32'
+                - id: '64'
+                  name:
+                    en-US: '64'
+                - id: '128'
+                  name:
+                    en-US: '128'
+                - id: '256'
+                  name:
+                    en-US: '256'
+                - id: '512'
+                  name:
+                    en-US: '512'
+            - id: OS_License_Provided_By
+            - id: VM_Role
+            - id: VM_Backup
+            - id: VM_Datacenter
+            - id: VM_ADD_DISK_COUNT
+            - id: VM_ADD_DISK_STORAGE_TIER
+            - id: VM_ADD_DISK_CAPACITY
+      optionGroups:
+        - id: deploymentInformation
+          name:
+            en-US: Deployment Information
+          optionIds:
+            - x_deploymentName
+            - x_description
+            - x_project
+            - customer
+        - id: systemConfiguration
+          name:
+            en-US: System Configuration
+          optionIds:
+            - VM_IMAGE
+            - VM_CPU_COUNT
+            - VM_MEMORY
+            - OS_License_Provided_By
+            - VM_Role
+          layout: NORMAL
+        - id: services
+          name:
+            en-US: Services
+          optionIds:
+            - VM_Backup
+        - id: location
+          name:
+            en-US: Location & Hosting
+          optionIds:
+            - VM_Datacenter
+        - id: storageConfiguration
+          name:
+            en-US: Storage Configuration
+          optionIds:
+            - VM_ADD_DISK_COUNT
+            - VM_ADD_DISK_STORAGE_TIER
+            - VM_ADD_DISK_CAPACITY
+    activities:
+      - id: deploy
+        type: OPERATION
+        designKey: 'MSVxvRA::W2K19'
+        parameters:
+          - id: x_deploymentName
+            value: '${_options.x_deploymentName}'
+          - id: x_description
+            value: '${_options.x_description}'
+          - id: x_project
+            value: '${_options.x_project}'
+          - id: customer
+            value: '${_customer.name}'
+          - id: VM_CPU_COUNT
+            value: '${_options.VM_CPU_COUNT}'
+          - id: VM_MEMORY
+            value: '${_options.VM_MEMORY}'
+          - id: OS_License_Provided_By
+            value: '${_options.OS_License_Provided_By}'
+          - id: VM_Role
+            value: '${_options.VM_Role}'
+          - id: VM_Backup
+            value: '${_options.VM_Backup}'
+          - id: VM_Datacenter
+            value: '${_options.VM_Datacenter}'
+          - id: VM_ADD_DISK_COUNT
+            value: '${_options.VM_ADD_DISK_COUNT}'
+          - id: VM_ADD_DISK_STORAGE_TIER
+            value: '${_options.VM_ADD_DISK_STORAGE_TIER}'
+          - id: VM_ADD_DISK_CAPACITY
+            value: '${_options.VM_ADD_DISK_CAPACITY}'
+          - id: VM_IMAGE
+            value: '${_options.VM_IMAGE}'
+        resultVariableName: request
+        resultVariables: []
+        onFailureActivities: []
+      - id: setDeploymentId
+        type: SET_VARIABLE
+        variableName: deploymentId
+        value: '${this.request && this.request.deploymentId || '' ''}'
+        scope: GLOBAL
+      - id: setOptionsVariable
+        type: SET_VARIABLE
+        variableName: options
+        value: '${_options}'
+        scope: GLOBAL
+  - type: GET_SERVICE_INSTANCE
+    activities:
+      - id: ifDeploymentIdExists
+        type: IF
+        condition: '${this.deploymentId}'
+        activities:
+          - id: getDeployment
+            type: OPERATION
+            designKey: 'MSVxvRA::DeploymentGet'
+            parameters:
+              - id: deploymentId
+                value: '${deploymentId}'
+            resultVariableName: deployment
+            resultVariables: []
+            onFailureActivities: []
+          - id: getDeploymentActions
+            type: OPERATION
+            designKey: 'MSVxvRA::Action'
+            parameters:
+              - id: deploymentId
+                value: '${deploymentId}'
+            resultVariableName: deploymentActions
+            resultVariables: []
+            condition: '${deployment}'
+            onFailureActivities: []
+          - id: getDeploymentResourceActions
+            type: OPERATION
+            designKey: 'MSVxvRA::DeploymentResourceAction'
+            parameters:
+              - id: deploymentId
+                value: '${deploymentId}'
+              - id: expandValidActions
+                value: 'true'
+              - id: expandedActionIds
+                value: >-
+                  Deployment.PowerOff,Deployment.PowerOn,Deployment.Delete,Deployment.Update,Deployment.ChangeOwner,Cloud.vSphere.Machine.PowerOff,Cloud.vSphere.Machine.PowerOn,Cloud.vSphere.Machine.Reset,Cloud.vSphere.Machine.Reboot,Cloud.vSphere.Machine.Suspend,Cloud.vSphere.Machine.Rebuild,Cloud.vSphere.Machine.Resize,Cloud.vSphere.Machine.Add.Disk,Cloud.vSphere.Machine.Remove.Disk,Cloud.vSphere.Machine.Snapshot.Create,Cloud.vSphere.Machine.Snapshot.Delete,Cloud.vSphere.Machine.Snapshot.Revert,Cloud.vSphere.Machine.Change.SecurityGroup,Cloud.vSphere.Machine.Update.Tags,Cloud.vSphere.Machine.Remote.Console,Cloud.vSphere.Machine.Remote.PrivateKey,Cloud.vSphere.Machine.Delete,Cloud.vSphere.Machine.custom.day2customeadddisk
+            resultVariableName: resourceActions
+            resultVariables: []
+            condition: '${deployment}'
+            onFailureActivities: []
+        elseActivities: []
+      - id: fillInstance
+        type: FILL_INSTANCE
+        componentTemplates: []
+        builder: '${buildInstance(this.options, this.deployment, this.deploymentActions, this.resourceActions)}'
+  - id: Deployment.PowerOff
+    type: ACTION
+    name:
+      en-US: Power Off
+    roles: []
+    optionsModel:
+      options: []
+      optionImports: []
+      optionGroups:
+        - id: inputs
+          name:
+            en-US: Inputs
+          optionIds: []
+    activities:
+      - id: executeAction
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${deploymentId}'
+          - id: actionId
+            value: Deployment.PowerOff
+        resultVariables: []
+        onFailureActivities: []
+  - id: Deployment.PowerOn
+    type: ACTION
+    name:
+      en-US: Power On
+    roles: []
+    activities:
+      - id: executeAction
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${deploymentId}'
+          - id: actionId
+            value: Deployment.PowerOn
+        resultVariables: []
+        onFailureActivities: []
+  - id: delete
+    type: ACTION
+    name:
+      en-US: Delete
+    roles: []
+    activities:
+      - id: executeDelete
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${deploymentId}'
+          - id: actionId
+            value: Deployment.Delete
+        resultVariables: []
+        onFailureActivities: []
+      - id: setInstanceState
+        type: SET_VARIABLE
+        variableName: instanceState
+        value: CANCELLED
+        scope: GLOBAL
+  - id: Deployment.ChangeOwner
+    type: ACTION
+    name:
+      en-US: Change Owner
+    optionsModel:
+      options:
+        - id: newOwner
+          name:
+            en-US: New Owner (email)
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+      optionGroups:
+        - id: ownerParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - newOwner
+    activities:
+      - id: execChangeOwner
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${deploymentId}'
+          - id: actionId
+            value: Deployment.ChangeOwner
+          - id: inputs
+            value: '${buildChangeOwnerInputs(_options.newOwner)}'
+  - id: Deployment.Update
+    type: ACTION
+    name:
+      en-US: Update Deployment
+    optionsModel:
+      options:
+        - id: reason
+          name:
+            en-US: Reason
+          type: TEXT_INPUT
+          requiredExpression: 'false'
+      optionGroups:
+        - id: updateParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - reason
+    activities:
+      - id: execUpdate
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${deploymentId}'
+          - id: actionId
+            value: Deployment.Update
+          - id: inputs
+            value: '${buildDeploymentUpdateInputs(_options.reason)}'
+  - id: Cloud.vSphere.Machine.Resize
+    type: ACTION
+    name:
+      en-US: Resize
+    description:
+      en-US: Resize a compute machine
+    optionsModel:
+      options: []
+      optionImports:
+        - designKey: 'MSVxvRA::W2K19'
+          options:
+            - id: VM_CPU_COUNT
+            - id: VM_MEMORY
+      optionGroups:
+        - id: parameters
+          name:
+            l10nFallback: Parameters
+            en-US: Parameters
+          optionIds:
+            - VM_CPU_COUNT
+            - VM_MEMORY
+    activities:
+      - id: executeResize
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Resize
+          - id: inputs
+            value: '${buildResizeInputs(_options.VM_CPU_COUNT,_options.VM_MEMORY)}'
+        timeout: 1800
+  - id: Cloud.vSphere.Machine.Reboot
+    type: ACTION
+    name:
+      en-US: Reboot
+    optionsModel:
+      options:
+        - id: reason
+          name:
+            en-US: Reason
+          type: TEXT_INPUT
+          requiredExpression: 'false'
+      optionGroups:
+        - id: rebootParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - reason
+    activities:
+      - id: execReboot
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Reboot
+          - id: inputs
+            value: '${buildRebootInputs(_options.reason)}'
+  - id: Cloud.vSphere.Machine.Rebuild
+    type: ACTION
+    name:
+      en-US: Rebuild Machine
+    optionsModel:
+      options:
+        - id: reason
+          name:
+            en-US: Reason
+          type: TEXT_INPUT
+          requiredExpression: 'false'
+      optionGroups:
+        - id: rebuildParams
+          name:
+            en-US: Rebuild Parameters
+          optionIds:
+            - reason
+    activities:
+      - id: execRebuild
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Rebuild
+          - id: inputs
+            value: '${buildRebuildInputs(_options.reason)}'
+  - id: Cloud.vSphere.Machine.Remove.Disk
+    type: ACTION
+    name:
+      en-US: Remove Disk
+    optionsModel:
+      options:
+        - id: diskId
+          name:
+            en-US: Disk ID
+          description:
+            en-US: Copy Disk Resource ID from attached disk and paste above after /resources/disks/
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+          value: /resources/disks/
+      optionGroups:
+        - id: settings
+          name:
+            en-US: Settings
+          optionIds:
+            - diskId
+    activities:
+      - id: execRemoveDisk
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Remove.Disk
+          - id: inputs
+            value: '${buildRemoveDiskInputs(_options.diskId)}'
+  - id: Cloud.vSphere.Machine.Add.Disk
+    type: ACTION
+    name:
+      en-US: Add Disk
+    optionsModel:
+      options:
+        - id: name
+          name:
+            en-US: Name
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+      optionImports:
+        - designKey: 'MSVxvRA::W2K19'
+          optionIdPrefix: ''
+          options:
+            - id: VM_ADD_DISK_CAPACITY
+            - id: VM_ADD_DISK_COUNT
+            - id: VM_ADD_DISK_STORAGE_TIER
+      optionGroups:
+        - id: parameters
+          name:
+            en-US: Parameters
+          optionIds:
+            - name
+            - VM_ADD_DISK_CAPACITY
+            - VM_ADD_DISK_COUNT
+            - VM_ADD_DISK_STORAGE_TIER
+    activities:
+      - id: execAddDisk
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Add.Disk
+          - id: inputs
+            value: '${buildAddDiskInputs(_options.name,_options.VM_ADD_DISK_CAPACITY,_options.VM_ADD_DISK_COUNT,_options.VM_ADD_DISK_STORAGE_TIER)}'
+  - id: Cloud.vSphere.Machine.Snapshot.Create
+    type: ACTION
+    name:
+      en-US: Create Snapshot
+    optionsModel:
+      options:
+        - id: snapshotName
+          name:
+            en-US: Snapshot Name
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+        - id: snapshotDescription
+          name:
+            en-US: Snapshot Description
+          type: TEXT_INPUT
+          requiredExpression: 'false'
+      optionGroups:
+        - id: snapshot
+          name:
+            en-US: Snapshot Parameters
+          optionIds:
+            - snapshotName
+            - snapshotDescription
+    activities:
+      - id: execSnapCreate
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Snapshot.Create
+          - id: inputs
+            value: '${buildSnapshotCreateInputs(_options.snapshotName, _options.snapshotDescription)}'
+  - id: Cloud.vSphere.Machine.Suspend
+    type: ACTION
+    name:
+      en-US: Suspend Machine
+    optionsModel:
+      options:
+        - id: reason
+          name:
+            en-US: Reason
+          type: TEXT_INPUT
+          requiredExpression: 'false'
+      optionGroups:
+        - id: suspendParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - reason
+    activities:
+      - id: execSuspend
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Suspend
+          - id: inputs
+            value: '${buildSuspendInputs(_options.reason)}'
+  - id: Cloud.vSphere.Machine.Delete
+    type: ACTION
+    name:
+      en-US: Delete Machine
+    optionsModel:
+      options:
+        - id: confirm
+          name:
+            en-US: Confirm Deletion
+          type: DROPDOWN_LIST
+          requiredExpression: 'true'
+          availableValues:
+            - id: 'YES'
+              name:
+                en-US: Yes – permanently delete this VM
+      optionGroups:
+        - id: deleteParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - confirm
+    activities:
+      - id: execDeleteMachine
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Delete
+          - id: inputs
+            value: '${buildDeleteVMInputs(_options.confirm)}'
+  - id: Cloud.vSphere.Machine.custom.day2customeadddisk
+    type: ACTION
+    name:
+      en-US: Custom Add Disk
+    optionsModel:
+      options:
+        - id: capacityGb
+          name:
+            en-US: Capacity (GB)
+          type: DROPDOWN_LIST
+          requiredExpression: 'true'
+          availableValues:
+            - id: '10'
+              name:
+                en-US: '10'
+            - id: '50'
+              name:
+                en-US: '50'
+            - id: '100'
+              name:
+                en-US: '100'
+            - id: '250'
+              name:
+                en-US: '250'
+            - id: '500'
+              name:
+                en-US: '500'
+        - id: tier
+          name:
+            en-US: Storage Tier
+          type: DROPDOWN_LIST
+          requiredExpression: 'true'
+          availableValues:
+            - id: capacity
+              name:
+                en-US: Capacity
+            - id: performance
+              name:
+                en-US: Performance
+      optionGroups:
+        - id: customDiskParams
+          name:
+            en-US: Parameters
+          optionIds:
+            - capacityGb
+            - tier
+    activities:
+      - id: execCustAddDisk
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.custom.day2customeadddisk
+          - id: inputs
+            value: '${buildCustomAddDiskInputs(_options.capacityGb,_options.tier)}'
+  - id: Cloud.vSphere.Machine.PowerOff
+    type: ACTION
+    name:
+      en-US: Power Off VM
+    activities:
+      - id: execPowerOff
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.PowerOff
+  - id: Cloud.vSphere.Machine.PowerOn
+    type: ACTION
+    name:
+      en-US: Power On VM
+    activities:
+      - id: execPowerOn
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.PowerOn
+  - id: Cloud.vSphere.Machine.Reset
+    type: ACTION
+    name:
+      en-US: Reset VM
+    activities:
+      - id: execReset
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Reset
+  - id: Cloud.vSphere.Machine.Snapshot.Delete
+    type: ACTION
+    name:
+      en-US: Delete Snapshot
+    optionsModel:
+      options:
+        - id: snapshotId
+          name:
+            en-US: Snapshot ID
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+    activities:
+      - id: execDeleteSnapshot
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Snapshot.Delete
+          - id: inputs
+            value: '${buildSnapshotDeleteInputs(_options.snapshotId)}'
+  - id: Cloud.vSphere.Machine.Snapshot.Revert
+    type: ACTION
+    name:
+      en-US: Revert Snapshot
+    optionsModel:
+      options:
+        - id: snapshotId
+          name:
+            en-US: Snapshot ID
+          type: TEXT_INPUT
+          requiredExpression: 'true'
+    activities:
+      - id: execRevertSnapshot
+        type: OPERATION
+        designKey: 'MSVxvRA::Execute'
+        parameters:
+          - id: deploymentId
+            value: '${_context.invocationContext.deploymentId}'
+          - id: resourceId
+            value: '${_context.invocationContext.resourceId}'
+          - id: actionId
+            value: Cloud.vSphere.Machine.Snapshot.Revert
+          - id: inputs
+            value: '${buildSnapshotRevertInputs(_options.snapshotId)}'
+activityBlocks: []
+localizableValues: []
+dataCenters: []
+javascriptFunctionDefinitions: |-
+  var _localizedValues = typeof _localizedValues !== 'undefined' ? _localizedValues : {};
+
+  // ----------------------
+  // Instance Construction
+  // ----------------------
+  function buildInstance(options, deployment, deploymentActions, deploymentResourcesActions) {
+    const actionFlows = _actionFlowsForBuilder;
+    const instance = buildInstanceBase(options, deployment);
+    instance.components = buildComponents(deployment, deploymentResourcesActions, actionFlows);
+    addInstanceActions(instance, deploymentActions, actionFlows);
+    return { serviceInstance: instance };
+  }
+
+  function buildInstanceBase(options, deployment) {
+    const fulfillment = _createFulfillmentForBuilder;
+    let instance = _serviceInstanceForBuilder || {
+      state: fulfillment.state === 'FAILURE' ? 'TERMINATED' : 'PENDING'
+    };
+
+    instance.name = deployment.name;
+    instance.description = `Created from CPS order ${fulfillment.creationRequestId}`;
+    instance.cloudProvider = 'vmware';
+
+    if (options && options.VM_HOSTNAME) {
+      instance.name += ' - ' + options.VM_HOSTNAME;
+    }
+
+    const deploymentExists = deployment && Object.keys(deployment).length > 0;
+
+    if (fulfillment.state === 'SUCCESS') {
+      instance.state = deploymentExists ? 'ACTIVE' : 'CANCELLED';
+    } else if (fulfillment.state === 'FAILURE' || !deploymentExists) {
+      instance.state = 'TERMINATED';
+    } else {
+      instance.state = 'PENDING';
+    }
+
+    return instance;
+  }
+
+  // ----------------------
+  // Component Builders
+  // ----------------------
+  function buildComponents(deployment, resourceActions, actionFlows) {
+    const components = [];
+    const diskComponents = [];
+
+    (deployment && deployment.resources || [])
+      .filter(r => r.type === 'Cloud.vSphere.Disk')
+      .forEach(disk => diskComponents.push(buildDiskComponent(disk)));
+
+    (deployment && deployment.resources || [])
+      .filter(r => r.type === 'Cloud.vSphere.Machine')
+      .forEach(vm => {
+        const vmComp = buildVMComponent(deployment, vm, resourceActions, actionFlows);
+        components.push(vmComp);
+
+        (vm.dependsOn || []).forEach(dep => {
+          const diskComp = findByPredicate(diskComponents, c => c.name === dep);
+          if (diskComp) {
+            diskComp.parentComponentId = vmComp.componentId;
+            components.push(diskComp);
+          }
+        });
+      });
+
+    return components;
+  }
+
+  function buildVMComponent(deployment, vmResource, resourceActions, actionFlows) {
+    const powerState = vmResource.properties && vmResource.properties.powerState || 'UNKNOWN';
+
+    const vmComponent = {
+      componentId: `${vmResource.id}`,
+      key: `VM_${vmResource.id}`,
+      name: `${vmResource.name}`,
+      properties: [],
+      availableActions: [],
+      components: [],
+      iconId: 'ad7d4c19-f2ae-385b-b631-39fb2f36334c',
+      state: { text: `${powerState}`, category: 'INFO' }
+    };
+
+    if (vmResource.properties) {
+  
+      buildPropertiesFromResource(vmResource.properties, vmComponent,
+        ['hostName','address','image','cpuCount','totalMemoryMB','osType','name','primaryMAC'],
+        'machine.properties.');
+
+      const disks = vmResource.properties.storage && vmResource.properties.storage.disks || [];
+      disks.forEach((disk, i) => {
+        addProperty(vmComponent.properties, buildProperty(`disk${i}.name`,
+          _localizedValues['machine.properties.disk.name'], disk.name));
+        addProperty(vmComponent.properties, buildProperty(`disk${i}.capacityGb`,
+          _localizedValues['machine.properties.disk.capacityGb'], String(disk.capacityGb)));
+        addProperty(vmComponent.properties, buildProperty(`disk${i}.type`,
+          _localizedValues['machine.properties.disk.type'], disk.type));
+        addProperty(vmComponent.properties, buildProperty(`disk${i}.encrypted`,
+          _localizedValues['machine.properties.disk.encrypted'], String(disk.encrypted), 'CHECKBOX'));
+      });
+
+      const networks = vmResource.properties.networks || [];
+      networks.forEach((net, i) => {
+        addProperty(vmComponent.properties, buildProperty(`network${i}.name`,
+          _localizedValues['machine.properties.network.name'], net.name));
+        addProperty(vmComponent.properties, buildProperty(`network${i}.address`,
+          _localizedValues['machine.properties.network.address'], net.address));
+        addProperty(vmComponent.properties, buildProperty(`network${i}.info`,
+          _localizedValues['machine.properties.network.info'], net.address));
+        addProperty(vmComponent.properties, buildProperty(`network${i}.deviceIndex`,
+          _localizedValues['machine.properties.network.deviceIndex'], String(net.deviceIndex), 'NUMBER_INPUT'));
+      });
+    }
+
+    addVmActions(vmComponent, vmResource, deployment, resourceActions, actionFlows);
+    return vmComponent;
+  }
+
+  function buildDiskComponent(diskResource) {
+    const diskId = `${diskResource.id}_storageDisk_${diskResource.name}`;
+    const props = diskResource.properties || {};
+
+    const comp = {
+      componentId: diskId,
+      key: `DISK_${diskId}`,
+      name: diskResource.name,
+      properties: [],
+      iconId: '58c25c83-83c2-3d7b-b3db-603931fffcde',
+      state: { text: 'ATTACHED', category: 'INFO' }
+    };
+
+    addProperty(comp.properties, buildProperty('capacityGb',
+      _localizedValues['disk.properties.capacityGb'], String(props.capacityGb), 'NUMBER_INPUT'));
+    addProperty(comp.properties, buildProperty('type',
+      _localizedValues['disk.properties.type'], props.type));
+    addProperty(comp.properties, buildProperty('status',
+      _localizedValues['disk.properties.status'], props.status));
+    addProperty(comp.properties, buildProperty('resourceName',
+      _localizedValues['disk.properties.resourceName'], props.resourceName));
+    addProperty(comp.properties, buildProperty('diskId',
+      'Disk Resource ID', diskResource.id));
+
+    return comp;
+  }
+
+  // ----------------------
+  // Action Wiring
+  // ----------------------
+  function addInstanceActions(instance, deploymentActionsString, actionFlows) {
+      const actions = deploymentActionsString ? JSON.parse(deploymentActionsString) : null;
+      if (!actions || instance.state === 'CANCELLED') return;
+
+      function add(id, flowId=id) {
+        // Added actionFlows[flowId] check to ensure the flow exists in the YAML
+        if (findByPredicate(actions, a => a.id === id && a.valid) && actionFlows[flowId]) {
+          instance.availableActions.push(buildActionFromFlow(actionFlows, flowId));
+        }
+      }
+
+    add('Deployment.PowerOff');
+    add('Deployment.PowerOn');
+    add('Deployment.Delete', 'delete');
+    add('Deployment.Update');
+    add('Deployment.ChangeOwner');
+  }
+
+  function addVmActions(vmComponent, vmResource, deployment, resourceActions, actionFlows) {
+      const vmActions = resourceActions && resourceActions[vmResource.id] || [];
+
+      function add(id, flowId=id) {
+        // Added actionFlows[flowId] check to ensure the flow exists in the YAML
+        if (findByPredicate(vmActions, a => a.id === id && a.valid) && actionFlows[flowId]) {
+          const act = buildActionFromFlow(actionFlows, flowId);
+          act.invocationContext = { deploymentId: deployment.id, resourceId: vmResource.id };
+          vmComponent.availableActions.push(act);
+        }
+      }
+
+    // VM lifecycle
+    add('Cloud.vSphere.Machine.Resize');
+    add('Cloud.vSphere.Machine.PowerOn', 'Deployment.PowerOn');
+    add('Cloud.vSphere.Machine.PowerOff', 'Deployment.PowerOff');
+
+    // Snapshot actions: only Create has inputs; Delete/Revert have none
+    add('Cloud.vSphere.Machine.Snapshot.Create');
+    add('Cloud.vSphere.Machine.Snapshot.Delete');
+    add('Cloud.vSphere.Machine.Snapshot.Revert');
+
+    // Other VM actions
+    add('Cloud.vSphere.Machine.Reboot');
+    add('Cloud.vSphere.Machine.Rebuild');
+    add('Cloud.vSphere.Machine.Remove.Disk');
+    add('Cloud.vSphere.Machine.Add.Disk');
+    add('Cloud.vSphere.Machine.Suspend');
+    add('Cloud.vSphere.Machine.Delete');
+    add('Cloud.vSphere.Machine.custom.day2customeadddisk');
+  }
+
+  // ----------------------
+  // Input Builders (Only ones needed)
+  // ----------------------
+  function buildResizeInputs(cpuCount, memoryGB) {
+    return JSON.stringify({
+      cpuCount: parseInt(cpuCount, 10),
+      totalMemoryMB: parseInt(memoryGB, 10) * 1024
+    });
+  }
+
+  function buildSnapshotCreateInputs(name, description) {
+    return JSON.stringify({
+      name: name,
+      description: description || ""
+    });
+  }
+
+  function buildSnapshotDeleteInputs(snapName) {
+    return JSON.stringify({
+      snapName,
+    });
+  }
+
+  function buildRemoveDiskInputs(diskId) {
+      return JSON.stringify({ diskId });
+  }
+
+
+  function buildAddDiskInputs(diskName, capacityGb, number, tier) {
+    return JSON.stringify({
+      name: diskName || "",
+      capacityGb: parseInt(capacityGb, 10),
+      number,
+      tier
+    });
+  }
+
+  function buildRebootInputs(reason) {
+    return JSON.stringify({ reason: reason || "" });
+  }
+
+  function buildSuspendInputs(reason) {
+    return JSON.stringify({ reason: reason || "" });
+  }
+
+  function buildRebuildInputs(reason) {
+    return JSON.stringify({ reason: reason || "" });
+  }
+
+  function buildDeleteVMInputs(confirm) {
+    return JSON.stringify({ confirm });
+  }
+
+  function buildCustomAddDiskInputs(capacityGb, tier) {
+    return JSON.stringify({
+      capacityGb: parseInt(capacityGb, 10),
+      tier
+    });
+  }
+
+  function buildDeploymentUpdateInputs(reason) {
+    return JSON.stringify({ reason: reason || "" });
+  }
+
+  function buildChangeOwnerInputs(newOwner) {
+    return JSON.stringify({ newOwner });
+  }
+
+  // ----------------------
+  // Utility Functions
+  // ----------------------
+  function buildActionFromFlow(actionFlows, id) {
+    const f = actionFlows[id];
+    const action = { actionId: id };
+
+    ['name','description','iconId','actionType','roles'].forEach(k => action[k] = f[k]);
+
+    if (f.optionsModel) {
+      action.optionsModel = clone(f.optionsModel);
+    }
+
+    return action;
+  }
+
+  function buildPropertiesFromResource(src, comp, ids, prefix) {
+    ids.forEach(id => {
+      const name = _localizedValues[(prefix || '') + id] || id;
+      addProperty(comp.properties, buildProperty(id, name, src[id]));
+    });
+  }
+
+  function addProperty(list, prop) {
+    if (prop && prop.id && prop.value !== null && prop.value !== undefined) {
+      list.push(prop);
+    }
+  }
+
+  function buildProperty(id, name, value, type) {
+    return {
+      id,
+      name: name || id, 
+      type: type || 'TEXT_INPUT',
+      value: value != null ? String(value) : null
+    };
+  }
+
+  function findByPredicate(arr, pred) {
+    let out = null;
+    (arr || []).some(i => {
+      if (pred(i)) { out = i; return true; }
+      return false;
+    });
+    return out;
+  }
+
+  function clone(o) {
+    return o == null ? null : JSON.parse(JSON.stringify(o));
+  }
+
+  function Array_isArray(o) {
+    return Object.prototype.toString.call(o) === '[object Array]';
+  }
+
+  // ----------------------
+  // Dynamic Dropdown Helpers
+  // ----------------------
+
+  function getAttachedDisks(vmResource) {
+    const disks =
+      vmResource &&
+      vmResource.properties &&
+      vmResource.properties.storage &&
+      Array.isArray(vmResource.properties.storage.disks)
+        ? vmResource.properties.storage.disks
+        : [];
+
+    return disks.map(function (d) {
+      return {
+        id: d.id,
+        name: d.name + " (" + d.capacityGb + " GB)"
+      };
+    });
+  }
+
+  function getRemovableDisks() {
+      return [
+          {
+              id: "/resources/disks/9a3b67f6-4208-4e1a-903f-3b22010c01c3",
+              name: {
+                  "en-US": "___002051 (5GB)"
+              }
+          }
+      ];
+  }
+
+  /*
+
+  function getRemovableDisks(vmResource) {
+
+      var result = [];
+
+      var disks =
+          vmResource &&
+          vmResource.properties &&
+          vmResource.properties.storage &&
+          vmResource.properties.storage.disks
+          ? vmResource.properties.storage.disks
+          : [];
+
+      disks.forEach(function(disk) {
+
+          result.push({
+              id: disk.id,
+              name: {
+                  "en-US":
+                      disk.resourceName +
+                      " (" +
+                      disk.capacityGb +
+                      "GB)"
+              }
+          });
+
+      });
+
+      return result;
+  }
+
+  */

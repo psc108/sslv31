@@ -1,0 +1,208 @@
+# {{ env_name }} — SSL Deployment Guide
+
+## Overview
+
+This bundle contains a complete SSL/TLS certificate set for the **{{ env_name }}** environment.
+
+- **CA:** {{ env_name }} Internal CA ({{ key_algo }} {{ key_size }}, valid {{ ca_validity_days }} days)
+- **Certificates:** 7 total (5 server + 2 client)
+- **Cipher Profile:** {{ cipher_profile | capitalize }} ({{ cipher.protocols }})
+- **Base Path:** {{ base_path }}
+
+## Machines
+
+| Role | Hostname | IP | Server Cert | Client Cert |
+|------|----------|-----|:-----------:|:-----------:|
+{% for role, host in hosts.items() %}
+| {{ role | capitalize }} | {{ host.fqdn }} | {{ host.ip }} | ✓ | {{ "✓" if role in ("backend", "frontend") else "—" }} |
+{% endfor %}
+
+## Pre-Flight Checks
+
+Before deploying, verify:
+
+```bash
+# 1. SSH access to all machines (from jumpserver)
+{% for role, host in hosts.items() %}
+ssh {{ host.fqdn }} hostname
+{% endfor %}
+
+# 2. Target directory is writable
+{% for role, host in hosts.items() %}
+ssh {{ host.fqdn }} "mkdir -p {{ base_path }}/{{ role }} && echo OK"
+{% endfor %}
+
+# 3. OpenSSL available on all machines
+{% for role, host in hosts.items() %}
+ssh {{ host.fqdn }} "openssl version"
+{% endfor %}
+```
+
+## Deployment Order
+
+Deploy in this order to avoid connection failures:
+
+### Step 1: CA Certificate (all machines)
+
+```bash
+{% for role, host in hosts.items() %}
+ssh {{ host.fqdn }} "mkdir -p {{ base_path }}/ca"
+scp ca/ca.pem {{ host.fqdn }}:{{ base_path }}/ca/
+{% endfor %}
+```
+
+### Step 2: MySQL
+
+```bash
+scp -r mysql/ {{ hosts.mysql.fqdn }}:{{ base_path }}/
+ssh {{ hosts.mysql.fqdn }} "chmod 600 {{ base_path }}/mysql/certs/*.key*; chown mysql:mysql {{ base_path }}/mysql/certs/*"
+# Merge mysql/config/ssl.cnf.snippet into /etc/my.cnf (or /etc/mysql/mysql.conf.d/ssl.cnf)
+ssh {{ hosts.mysql.fqdn }} "systemctl restart mysqld"
+ssh {{ hosts.mysql.fqdn }} "mysql -e \"SHOW VARIABLES LIKE '%ssl%'\""
+```
+
+### Step 3: RabbitMQ
+
+```bash
+scp -r rabbitmq/ {{ hosts.rabbitmq.fqdn }}:{{ base_path }}/
+ssh {{ hosts.rabbitmq.fqdn }} "chmod 600 {{ base_path }}/rabbitmq/certs/*.key*; chown rabbitmq:rabbitmq {{ base_path }}/rabbitmq/certs/*"
+# Merge rabbitmq/config/rabbitmq-ssl.conf.snippet into /etc/rabbitmq/rabbitmq.conf
+ssh {{ hosts.rabbitmq.fqdn }} "systemctl restart rabbitmq-server"
+ssh {{ hosts.rabbitmq.fqdn }} "rabbitmq-diagnostics listeners"
+```
+
+### Step 4: Keystone
+
+```bash
+scp -r keystone/ {{ hosts.keystone.fqdn }}:{{ base_path }}/
+ssh {{ hosts.keystone.fqdn }} "chmod 600 {{ base_path }}/keystone/certs/*.key*"
+# Merge keystone/config/apache-ssl.conf.snippet into Apache vhost
+ssh {{ hosts.keystone.fqdn }} "a2enmod ssl headers && systemctl restart apache2"
+curl --cacert ca/ca.pem https://{{ hosts.keystone.fqdn }}:5000/v3
+```
+
+### Step 5: Backend
+
+```bash
+scp -r backend/ {{ hosts.backend.fqdn }}:{{ base_path }}/
+ssh {{ hosts.backend.fqdn }} "chmod 600 {{ base_path }}/backend/certs/*.key* {{ base_path }}/backend/stores/*.p12"
+# Update application.yml with values from backend/config/application-ssl.yml.snippet
+# Restart all backend services
+```
+
+### Step 6: Frontend
+
+```bash
+scp -r frontend/ {{ hosts.frontend.fqdn }}:{{ base_path }}/
+ssh {{ hosts.frontend.fqdn }} "chmod 600 {{ base_path }}/frontend/certs/*.key* {{ base_path }}/frontend/stores/*.p12"
+# Update application.yml with values from frontend/config/application-ssl.yml.snippet
+# Restart all frontend services
+```
+
+## Quick Deploy (Automated)
+
+```bash
+# From the directory where this bundle was extracted:
+chmod +x scripts/distribute-certs.sh
+./scripts/distribute-certs.sh
+
+# Verify:
+chmod +x scripts/verify-certs.sh
+./scripts/verify-certs.sh
+```
+
+## Passwords
+
+| Item | Plaintext | Encrypted (ENC) |
+|------|-----------|-----------------|
+| Keystore/Truststore password | `{{ ssl_passphrase }}` | `{{ enc_ssl_passphrase }}` |
+| Jasypt master key | `{{ encryption_key }}` | — (this IS the master key) |
+| Algorithm | — | PBEWITHSHA256AND256BITAES-CBC-BC |
+| Iterations | — | 1000 |
+
+**JVM argument for Jasypt:** `-Djasypt.encryptor.password={{ encryption_key }}`
+
+## mTLS Connection Map
+
+```
+Backend  ──mTLS──▶  MySQL       (backend presents client cert)
+Backend  ──mTLS──▶  RabbitMQ    (backend presents client cert)
+Backend  ──TLS───▶  Keystone    (server TLS only, token auth)
+Frontend ──mTLS──▶  Backend     (frontend presents client cert)
+Frontend ──mTLS──▶  RabbitMQ    (frontend presents client cert)
+```
+
+## Post-Deployment Verification
+
+Run these from the **backend** machine:
+
+```bash
+# MySQL — TLS connection
+openssl s_client -connect {{ hosts.mysql.fqdn }}:3306 -starttls mysql \
+  -CAfile {{ base_path }}/ca/ca.pem
+
+# RabbitMQ — mTLS connection
+openssl s_client -connect {{ hosts.rabbitmq.fqdn }}:5671 \
+  -CAfile {{ base_path }}/ca/ca.pem \
+  -cert {{ base_path }}/backend/certs/client-cert.pem \
+  -key {{ base_path }}/backend/certs/client.key.nopass
+
+# Keystone — TLS connection
+curl -v --cacert {{ base_path }}/ca/ca.pem \
+  https://{{ hosts.keystone.fqdn }}:5000/v3
+```
+
+Run from the **frontend** machine:
+
+```bash
+# Backend — mTLS connection
+curl -v --cacert {{ base_path }}/ca/ca.pem \
+  --cert {{ base_path }}/frontend/certs/client-cert.pem \
+  --key {{ base_path }}/frontend/certs/client.key.nopass \
+  https://{{ hosts.backend.fqdn }}:8443/health
+
+# RabbitMQ — mTLS connection
+openssl s_client -connect {{ hosts.rabbitmq.fqdn }}:5671 \
+  -CAfile {{ base_path }}/ca/ca.pem \
+  -cert {{ base_path }}/frontend/certs/client-cert.pem \
+  -key {{ base_path }}/frontend/certs/client.key.nopass
+```
+
+## Renewal
+
+When certificates approach expiry (default: {{ cert_validity_days }} days):
+1. Regenerate this bundle using the same template in SSL Certificate Manager
+2. The CA remains the same ({{ ca_validity_days }}-day validity) — only leaf certs change
+3. Re-run `distribute-certs.sh` and restart services
+4. No truststore changes needed (same CA)
+
+## Rollback
+
+If issues occur after deployment:
+
+1. **Stop** the affected service
+2. **Restore** previous certificate files from backup:
+   ```bash
+   ssh <host> "cp -a {{ base_path }}/<role>.bak/* {{ base_path }}/<role>/"
+   ```
+3. **Restart** the service
+4. **Investigate** using `scripts/verify-certs.sh`
+
+**Tip:** Before deploying, back up existing certs:
+```bash
+{% for role, host in hosts.items() %}
+ssh {{ host.fqdn }} "cp -a {{ base_path }}/{{ role }} {{ base_path }}/{{ role }}.bak 2>/dev/null || true"
+{% endfor %}
+```
+
+## Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `PKIX path building failed` | Truststore missing CA | Verify `{{ base_path }}/<role>/stores/truststore.p12` contains the CA cert |
+| `Hostname not verified` | Connecting via wrong hostname | Use FQDN from this guide, not IP (unless IP is in SAN) |
+| `certificate_required` | Client cert not presented | Check client-keystore.p12 path in application.yml |
+| `handshake_failure` | TLS version mismatch | Ensure both sides support {{ cipher.protocols }} |
+| `password was incorrect` | Wrong keystore password | Password is: `{{ ssl_passphrase }}` |
+| MySQL `ERROR 2026` | Client not using SSL | Add `useSSL=true&requireSSL=true` to JDBC URL |
+| RabbitMQ `unknown_ca` | Client doesn't trust server CA | Verify truststore contains `{{ base_path }}/ca/ca.pem` |

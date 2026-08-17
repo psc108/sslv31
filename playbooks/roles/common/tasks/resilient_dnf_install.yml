@@ -1,0 +1,17 @@
+---
+# resilient_dnf_install.yml — RHEL/dnf counterpart of resilient_apt_install.yml.
+# Retries several times with pacing between attempts, for the same class of
+# transient network/lock disruption that motivated the apt version.
+#
+# Include with:
+#   vars:
+#     resilient_dnf_packages: [pkg1, pkg2]
+
+- name: "Install packages (resilient): {{ resilient_dnf_packages | join(', ') }}"
+  ansible.builtin.shell: |
+    dnf install -y --setopt=install_weak_deps=False {{ resilient_dnf_packages | join(' ') }}
+  register: resilient_dnf_result
+  until: resilient_dnf_result.rc == 0
+  retries: 5
+  delay: 15
+  changed_when: "'Nothing to do' not in resilient_dnf_result.stdout"

@@ -1,0 +1,36 @@
+---
+- name: Purge existing rsyslog config
+  file:
+    path: /etc/rsyslog.d/99-remote.conf
+    state: absent
+
+- name: Install rsyslog
+  apt:
+    name: rsyslog
+    state: present
+    update_cache: yes
+
+- name: Configure remote forwarding
+  copy:
+    dest: /etc/rsyslog.d/99-remote.conf
+    content: |
+      # Remote log forwarding
+      {% if rsyslog_remote_host | default('') %}
+      {% if rsyslog_protocol | default('tcp') == 'tcp' %}
+      *.* @@{{ rsyslog_remote_host }}:{{ rsyslog_remote_port | default(514) }}
+      {% else %}
+      *.* @{{ rsyslog_remote_host }}:{{ rsyslog_remote_port | default(514) }}
+      {% endif %}
+      {% endif %}
+      {{ rsyslog_extra_rules | default('') }}
+    owner: root
+    group: root
+    mode: "0644"
+  when: rsyslog_remote_host | default('') | length > 0 or rsyslog_extra_rules | default('') | length > 0
+
+- name: Enable and restart rsyslog
+  systemd:
+    name: rsyslog
+    enabled: yes
+    state: restarted
+    daemon_reload: yes

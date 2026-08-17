@@ -1,0 +1,43 @@
+#!/bin/bash
+# SSL Certificate Manager — CA Trust Installation (RHEL/Rocky/AlmaLinux)
+# Generated: {{ timestamp }}
+# Root CA: {{ ca_cn }}
+#
+# This script installs the internal root CA certificate into the
+# system trust store on RHEL-based Linux distributions.
+
+set -euo pipefail
+
+CA_FILE="{{ ca_filename }}"
+DEST="/etc/pki/ca-trust/source/anchors/${CA_FILE}"
+
+# Root check
+if [[ $EUID -ne 0 ]]; then
+    echo "ERROR: This script must be run as root (use sudo)." >&2
+    exit 1
+fi
+
+# Check CA file exists
+if [[ ! -f "./${CA_FILE}" ]]; then
+    echo "ERROR: ${CA_FILE} not found in current directory." >&2
+    exit 1
+fi
+
+# Backup existing if present
+if [[ -f "${DEST}" ]]; then
+    echo "Backing up existing ${DEST} to ${DEST}.bak"
+    cp "${DEST}" "${DEST}.bak"
+fi
+
+# Install
+echo "Installing ${CA_FILE} to ${DEST}..."
+cp "./${CA_FILE}" "${DEST}"
+chmod 644 "${DEST}"
+
+# Update system trust store
+echo "Updating system CA trust..."
+update-ca-trust extract
+
+echo ""
+echo "✓ Root CA installed successfully."
+echo "  Verify: openssl verify -CAfile /etc/pki/tls/certs/ca-bundle.crt ./${CA_FILE}"

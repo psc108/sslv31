@@ -1,0 +1,28 @@
+[project]
+name = "ssl-cert-manager"
+version = "0.1.0"
+description = "Web-based SSL Certificate Manager — Self-Signed CA, Trust Store & CSR Tool"
+requires-python = ">=3.11"
+authors = [{ name = "Paul Scott" }]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "COM", "C4", "PT", "RET", "SIM"]
+ignore = ["S101", "COM812"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+exclude = ["alembic/"]
+
+[[tool.mypy.overrides]]
+module = ["uvicorn.*", "gunicorn.*", "slowapi.*"]
+ignore_missing_imports = true

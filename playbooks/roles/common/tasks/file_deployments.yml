@@ -1,0 +1,36 @@
+---
+# Include with: ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+# Expects: file_deployments (list of dicts with path, content, mode, owner)
+#
+# loop_var is explicitly renamed away from the default "item" — every caller
+# of this file is itself reached via site.yml's "Include product roles" task,
+# which loops over that host's products using the default "item" var. With
+# both loops sharing that name, Ansible's own diagnostics ("The variable
+# 'item' is already in use... unexpected behavior") turned out to mean this
+# file's own when: (both the propagated one from each caller's include_tasks
+# and this file's own per-item one below) could silently evaluate false
+# regardless of the real value — same confirmed root cause as
+# common/tasks/sudo_users.yml.
+
+- name: Create directories for file deployments
+  ansible.builtin.file:
+    path: "{{ deploy_file.path | dirname }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ deploy_file.owner | default('root') }}"
+  loop: "{{ file_deployments }}"
+  loop_control:
+    loop_var: deploy_file
+    label: "{{ deploy_file.path }}"
+
+- name: Deploy files
+  ansible.builtin.copy:
+    content: "{{ deploy_file.content }}"
+    dest: "{{ deploy_file.path }}"
+    mode: "{{ deploy_file.mode | default('0644') }}"
+    owner: "{{ deploy_file.owner | default('root') }}"
+  loop: "{{ file_deployments }}"
+  loop_control:
+    loop_var: deploy_file
+    label: "{{ deploy_file.path }}"
+  when: deploy_file.content | default('') | length > 0

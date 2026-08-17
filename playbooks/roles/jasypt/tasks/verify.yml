@@ -1,0 +1,18 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    jasypt_install_path: "{{ product_vars.jasypt_install_path | default('/opt/jasypt') }}"
+
+- name: Verify Jasypt is installed
+  ansible.builtin.shell: |
+    if [ -f {{ jasypt_install_path }}/jasypt-1.9.3.jar ]; then
+      echo "{\"TLS_RESULT\": {\"service\": \"jasypt\", \"status\": \"ok\", \"path\": \"{{ jasypt_install_path }}/jasypt-1.9.3.jar\"}}"
+    else
+      echo "{\"TLS_RESULT\": {\"service\": \"jasypt\", \"status\": \"error\", \"error\": \"jar not found\"}}"
+    fi
+  register: verify_result
+  changed_when: false
+
+- name: Show verify result
+  ansible.builtin.debug:
+    msg: "{{ verify_result.stdout }}"

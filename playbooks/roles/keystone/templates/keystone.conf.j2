@@ -1,0 +1,21 @@
+[DEFAULT]
+log_dir = /var/log/keystone
+log_file = keystone.log
+
+[database]
+connection = {{ keystone_db_connection }}
+
+[token]
+provider = {{ keystone_token_provider }}
+expiration = 3600
+
+[fernet_tokens]
+key_repository = /etc/keystone/fernet-keys/
+max_active_keys = 3
+
+[credential]
+key_repository = /etc/keystone/credential-keys/
+
+[cache]
+enabled = true
+backend = dogpile.cache.memory

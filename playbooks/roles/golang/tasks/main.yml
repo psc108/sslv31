@@ -1,0 +1,61 @@
+---
+- name: Determine Go version to install
+  ansible.builtin.set_fact:
+    go_version: "{{ go_version_number | default('1.23.4') }}"
+    go_install_dir: "{{ go_install_path | default('/usr/local/go') }}"
+
+- name: Check for cached Go tarball
+  ansible.builtin.stat:
+    path: /certmanager-data/pkg-cache/bin/go{{ go_version }}.linux-amd64.tar.gz
+  register: go_cache
+
+- name: Remove existing Go installation
+  ansible.builtin.file:
+    path: "{{ go_install_dir }}"
+    state: absent
+
+- name: Install Go from local cache tarball
+  when: go_cache.stat.exists
+  ansible.builtin.unarchive:
+    src: /certmanager-data/pkg-cache/bin/go{{ go_version }}.linux-amd64.tar.gz
+    dest: "{{ go_install_dir | dirname }}"
+    remote_src: true
+  changed_when: true
+
+- name: Download and install Go (network fallback)
+  when: not go_cache.stat.exists
+  block:
+    - name: Download Go tarball
+      ansible.builtin.get_url:
+        url: "https://go.dev/dl/go{{ go_version }}.linux-amd64.tar.gz"
+        dest: /tmp/go.tar.gz
+        mode: "0644"
+
+    - name: Extract Go
+      ansible.builtin.unarchive:
+        src: /tmp/go.tar.gz
+        dest: "{{ go_install_dir | dirname }}"
+        remote_src: true
+
+    - name: Clean up tarball
+      ansible.builtin.file:
+        path: /tmp/go.tar.gz
+        state: absent
+
+- name: Add Go to system PATH
+  ansible.builtin.copy:
+    dest: /etc/profile.d/golang.sh
+    content: |
+      export PATH=$PATH:{{ go_install_dir }}/bin
+      export GOPATH=$HOME/go
+      export PATH=$PATH:$GOPATH/bin
+    mode: "0644"
+
+- name: Verify Go installation
+  ansible.builtin.command: "{{ go_install_dir }}/bin/go version"
+  register: go_ver
+  changed_when: false
+
+- name: Show Go version
+  ansible.builtin.debug:
+    msg: "{{ go_ver.stdout }}"

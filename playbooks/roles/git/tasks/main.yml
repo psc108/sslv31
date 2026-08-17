@@ -1,0 +1,15 @@
+---
+- name: Install git
+  apt:
+    name: git
+    state: present
+    update_cache: yes
+
+- name: Verify git version
+  command: git --version
+  register: git_ver
+  changed_when: false
+
+- name: Show git version
+  debug:
+    msg: "{{ git_ver.stdout }}"

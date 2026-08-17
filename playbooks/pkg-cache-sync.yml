@@ -1,0 +1,463 @@
+---
+# pkg-cache-sync.yml — Downloads all catalogue product packages into the shared
+# volume at /data/pkg-cache/<os_family>/ so target containers can install offline.
+#
+# Runs against one representative host per OS family (passed via extra_vars).
+# Each host downloads packages native to its OS and saves them into the shared
+# certmanager-data volume, which is mounted read-only on all targets.
+#
+# Extra vars (set by the backend when submitting the sync job):
+#   sync_ubuntu_host  — inventory hostname of an Ubuntu/Debian target (optional)
+#   sync_rhel_host    — inventory hostname of a RHEL/CentOS target (optional)
+#   sync_alpine_host  — inventory hostname of an Alpine target (optional)
+#
+# If a host var is not set or is empty, that OS family is skipped.
+# Binary tarballs (Node.js, Go) are OS-agnostic and downloaded once on localhost.
+
+# ============================================================
+# Ubuntu / Debian — apt packages
+# ============================================================
+
+- name: Sync Ubuntu/Debian package cache
+  hosts: "{{ sync_ubuntu_host | default('') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  vars:
+    cache_dir: /certmanager-data/pkg-cache/apt
+    apt_packages:
+      # Base provisioning
+      - openjdk-17-jre-headless
+      - ca-certificates
+      - curl
+      - gnupg
+      # Python role
+      - python3-pip
+      - python3-venv
+      # MySQL role
+      - mysql-server
+      - mysql-client
+      # RabbitMQ role
+      - erlang-nox
+      - rabbitmq-server
+      # Nginx role
+      - nginx
+      # NFS
+      - nfs-kernel-server
+      - nfs-common
+      # Docker prerequisites
+      - apt-transport-https
+      - lsb-release
+      # Misc utilities
+      - git
+      - wget
+      - unzip
+      - jq
+      - net-tools
+      - dnsutils
+      - htop
+      - vim
+      # Monitoring
+      - chrony
+      - rsyslog
+      # Security
+      - ufw
+      - fail2ban
+      # Build tools
+      - build-essential
+      - gcc
+      - g++
+      - make
+      - cmake
+      - gdb
+      # HAProxy
+      - haproxy
+      # Redis
+      - redis-server
+      # PostgreSQL
+      - postgresql
+      - postgresql-client
+      # MongoDB prerequisites
+      - libssl-dev
+      # OpenLDAP
+      - slapd
+      - ldap-utils
+      # Memcached
+      - memcached
+      # Certbot
+      - certbot
+      # Keystone prerequisites
+      - apache2
+      - libapache2-mod-wsgi-py3
+      - keystone
+      # Index builder (must be present on the sync host)
+      - dpkg-dev
+
+  tasks:
+    - name: Verify this is a Debian/Ubuntu host
+      ansible.builtin.assert:
+        that: ansible_facts.os_family == "Debian"
+        fail_msg: "sync_ubuntu_host must be a Debian/Ubuntu host (got {{ ansible_facts.os_family }})"
+
+    - name: Create apt cache directory on shared volume
+      ansible.builtin.file:
+        path: "{{ cache_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install dpkg-dev (needed to build Packages index)
+      ansible.builtin.apt:
+        name: dpkg-dev
+        state: present
+        update_cache: true
+
+    - name: Update apt metadata
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Download all catalogue packages and dependencies
+      ansible.builtin.shell: |
+        cd {{ cache_dir }}
+        apt-get download $(apt-cache depends --recurse --no-recommends --no-suggests \
+          --no-conflicts --no-breaks --no-replaces --no-enhances \
+          {{ apt_packages | join(' ') }} 2>/dev/null \
+          | grep '^\w' | sort -u) 2>/dev/null || true
+        apt-get download {{ apt_packages | join(' ') }} 2>/dev/null || true
+      args:
+        chdir: "{{ cache_dir }}"
+      changed_when: true
+
+    - name: Build apt Packages index
+      ansible.builtin.shell: |
+        cd {{ cache_dir }}
+        dpkg-scanpackages --multiversion . > Packages
+        gzip -9 -k -f Packages
+      args:
+        chdir: "{{ cache_dir }}"
+      changed_when: true
+
+    - name: Count cached .deb files
+      ansible.builtin.find:
+        paths: "{{ cache_dir }}"
+        patterns: "*.deb"
+      register: deb_files
+
+    - name: Write Ubuntu manifest fragment
+      ansible.builtin.copy:
+        content: |
+          {
+            "os_family": "Debian",
+            "synced_at": "{{ ansible_facts.date_time.iso8601 }}",
+            "synced_by_host": "{{ inventory_hostname }}",
+            "package_count": {{ deb_files.matched }},
+            "packages": {{ apt_packages | to_json }}
+          }
+        dest: /certmanager-data/pkg-cache/manifest-apt.json
+        mode: "0644"
+
+    - name: Report Ubuntu sync result
+      ansible.builtin.debug:
+        msg: "Ubuntu/Debian cache: {{ deb_files.matched }} .deb packages in {{ cache_dir }}"
+
+
+# ============================================================
+# RHEL / CentOS / AlmaLinux / Rocky — dnf/rpm packages
+# ============================================================
+
+- name: Sync RHEL/CentOS package cache
+  hosts: "{{ sync_rhel_host | default('') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  vars:
+    cache_dir: /certmanager-data/pkg-cache/rpm
+    dnf_packages:
+      # Base provisioning
+      - java-17-openjdk-headless
+      - ca-certificates
+      - curl
+      - gnupg2
+      # Python role
+      - python3-pip
+      - python3
+      # MySQL role (RHEL uses mysql-community or mariadb)
+      - mariadb-server
+      - mariadb
+      # Nginx role
+      - nginx
+      # NFS
+      - nfs-utils
+      # Misc utilities
+      - git
+      - wget
+      - unzip
+      - jq
+      - net-tools
+      - bind-utils
+      - htop
+      - vim
+      # Monitoring
+      - chrony
+      - rsyslog
+      # Security
+      - fail2ban
+      # Build tools
+      - gcc
+      - gcc-c++
+      - make
+      - cmake
+      - gdb
+      - "@Development Tools"
+      # HAProxy
+      - haproxy
+      # Redis
+      - redis
+      # PostgreSQL
+      - postgresql-server
+      - postgresql
+      # OpenLDAP
+      - openldap-servers
+      - openldap-clients
+      # Memcached
+      - memcached
+      # Certbot
+      - certbot
+      # Apache (for Keystone)
+      - httpd
+      - python3-mod_wsgi
+      # createrepo needed to build RPM repo index
+      - createrepo_c
+
+  tasks:
+    - name: Verify this is a RedHat-family host
+      ansible.builtin.assert:
+        that: ansible_facts.os_family == "RedHat"
+        fail_msg: "sync_rhel_host must be a RHEL/CentOS host (got {{ ansible_facts.os_family }})"
+
+    - name: Create rpm cache directory on shared volume
+      ansible.builtin.file:
+        path: "{{ cache_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install createrepo_c (needed to build RPM repo index)
+      ansible.builtin.dnf:
+        name: createrepo_c
+        state: present
+
+    - name: Download all catalogue RPM packages and dependencies
+      ansible.builtin.shell: |
+        cd {{ cache_dir }}
+        dnf download --resolve --alldeps --destdir={{ cache_dir }} \
+          {{ dnf_packages | reject('match', '^@') | list | join(' ') }} 2>/dev/null || true
+      changed_when: true
+
+    - name: Build RPM repository index
+      ansible.builtin.shell: |
+        createrepo_c --update {{ cache_dir }}
+      changed_when: true
+
+    - name: Count cached .rpm files
+      ansible.builtin.find:
+        paths: "{{ cache_dir }}"
+        patterns: "*.rpm"
+      register: rpm_files
+
+    - name: Write RHEL manifest fragment
+      ansible.builtin.copy:
+        content: |
+          {
+            "os_family": "RedHat",
+            "synced_at": "{{ ansible_facts.date_time.iso8601 }}",
+            "synced_by_host": "{{ inventory_hostname }}",
+            "package_count": {{ rpm_files.matched }},
+            "packages": {{ dnf_packages | to_json }}
+          }
+        dest: /certmanager-data/pkg-cache/manifest-rpm.json
+        mode: "0644"
+
+    - name: Report RHEL sync result
+      ansible.builtin.debug:
+        msg: "RHEL/CentOS cache: {{ rpm_files.matched }} .rpm packages in {{ cache_dir }}"
+
+
+# ============================================================
+# Alpine — apk packages
+# ============================================================
+
+- name: Sync Alpine package cache
+  hosts: "{{ sync_alpine_host | default('') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  vars:
+    cache_dir: /certmanager-data/pkg-cache/apk
+    apk_packages:
+      - openjdk17-jre-headless
+      - ca-certificates
+      - curl
+      - gnupg
+      - python3
+      - py3-pip
+      - nginx
+      - git
+      - wget
+      - unzip
+      - chrony
+      - rsyslog
+      - gcc
+      - g++
+      - make
+      - cmake
+      - redis
+      - postgresql16
+      - memcached
+      - openldap
+      - openldap-clients
+
+  tasks:
+    - name: Verify this is an Alpine host
+      ansible.builtin.assert:
+        that: ansible_facts.os_family == "Alpine"
+        fail_msg: "sync_alpine_host must be an Alpine host (got {{ ansible_facts.os_family }})"
+
+    - name: Create apk cache directory on shared volume
+      ansible.builtin.file:
+        path: "{{ cache_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Update apk index
+      ansible.builtin.command: apk update
+      changed_when: false
+
+    - name: Download Alpine packages (fetch only, no install)
+      ansible.builtin.shell: |
+        apk fetch --output {{ cache_dir }} --recursive {{ apk_packages | join(' ') }} 2>/dev/null || true
+      changed_when: true
+
+    - name: Build apk APKINDEX
+      ansible.builtin.shell: |
+        cd {{ cache_dir }}
+        apk index -o APKINDEX.tar.gz *.apk 2>/dev/null || true
+      changed_when: true
+
+    - name: Count cached .apk files
+      ansible.builtin.find:
+        paths: "{{ cache_dir }}"
+        patterns: "*.apk"
+      register: apk_files
+
+    - name: Write Alpine manifest fragment
+      ansible.builtin.copy:
+        content: |
+          {
+            "os_family": "Alpine",
+            "synced_at": "{{ ansible_facts.date_time.iso8601 }}",
+            "synced_by_host": "{{ inventory_hostname }}",
+            "package_count": {{ apk_files.matched }},
+            "packages": {{ apk_packages | to_json }}
+          }
+        dest: /certmanager-data/pkg-cache/manifest-apk.json
+        mode: "0644"
+
+    - name: Report Alpine sync result
+      ansible.builtin.debug:
+        msg: "Alpine cache: {{ apk_files.matched }} .apk packages in {{ cache_dir }}"
+
+
+# ============================================================
+# Binary tarballs — OS-agnostic, downloaded once on localhost
+# ============================================================
+
+- name: Sync binary tarballs (OS-agnostic)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: true
+
+  vars:
+    bin_cache_dir: /data/pkg-cache/bin
+
+  tasks:
+    - name: Create bin cache directory
+      ansible.builtin.file:
+        path: "{{ bin_cache_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download Node.js 20 tarball (linux-x64)
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-x64.tar.xz"
+        dest: "{{ bin_cache_dir }}/node-v20-linux-x64.tar.xz"
+        mode: "0644"
+        timeout: 120
+      ignore_errors: true
+      register: nodejs_x64
+
+    - name: Download Node.js 20 tarball (linux-arm64)
+      ansible.builtin.get_url:
+        url: "https://nodejs.org/dist/v20.18.0/node-v20.18.0-linux-arm64.tar.xz"
+        dest: "{{ bin_cache_dir }}/node-v20-linux-arm64.tar.xz"
+        mode: "0644"
+        timeout: 120
+      ignore_errors: true
+      register: nodejs_arm64
+
+    - name: Download Go 1.23 tarball (linux-amd64)
+      ansible.builtin.get_url:
+        url: "https://go.dev/dl/go1.23.4.linux-amd64.tar.gz"
+        dest: "{{ bin_cache_dir }}/go1.23.4.linux-amd64.tar.gz"
+        mode: "0644"
+        timeout: 120
+      ignore_errors: true
+      register: go_amd64
+
+    - name: Download Go 1.23 tarball (linux-arm64)
+      ansible.builtin.get_url:
+        url: "https://go.dev/dl/go1.23.4.linux-arm64.tar.gz"
+        dest: "{{ bin_cache_dir }}/go1.23.4.linux-arm64.tar.gz"
+        mode: "0644"
+        timeout: 120
+      ignore_errors: true
+      register: go_arm64
+
+    - name: Write combined manifest
+      ansible.builtin.shell: |
+        python3 -c "
+        import json, os
+        from pathlib import Path
+
+        cache = Path('/data/pkg-cache')
+        manifest = {'generated_at': '{{ ansible_facts.date_time.iso8601 }}', 'os_families': {}}
+
+        for frag in ['manifest-apt.json', 'manifest-rpm.json', 'manifest-apk.json']:
+            p = cache / frag
+            if p.exists():
+                data = json.loads(p.read_text())
+                manifest['os_families'][data['os_family']] = data
+
+        manifest['bin'] = {
+            'nodejs_x64': {{ (nodejs_x64 is not failed) | lower }},
+            'nodejs_arm64': {{ (nodejs_arm64 is not failed) | lower }},
+            'go_amd64': {{ (go_amd64 is not failed) | lower }},
+            'go_arm64': {{ (go_arm64 is not failed) | lower }},
+        }
+
+        (cache / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+        print('Manifest written')
+        "
+      changed_when: true
+
+    - name: Report binary cache result
+      ansible.builtin.debug:
+        msg:
+          - "Binary tarballs:"
+          - "  Node.js x64:  {{ 'cached' if nodejs_x64 is not failed else 'FAILED' }}"
+          - "  Node.js arm64: {{ 'cached' if nodejs_arm64 is not failed else 'FAILED' }}"
+          - "  Go amd64:     {{ 'cached' if go_amd64 is not failed else 'FAILED' }}"
+          - "  Go arm64:     {{ 'cached' if go_arm64 is not failed else 'FAILED' }}"

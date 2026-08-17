@@ -1,0 +1,215 @@
+---
+# Base role — common provisioning for all managed hosts.
+# Variables are prefixed by service_role (e.g. frontend_server_cert_pem).
+
+- name: Set host cert vars from role-prefixed vars
+  ansible.builtin.set_fact:
+    server_cert_pem: "{{ lookup('vars', service_role + '_server_cert_pem') }}"
+    server_key_pem: "{{ lookup('vars', service_role + '_server_key_pem') }}"
+    truststore_password: "{{ lookup('vars', service_role + '_truststore_password') }}"
+    keystore_password: "{{ lookup('vars', service_role + '_keystore_password') }}"
+    # Matches wherever "Deploy CA chain PEM" below actually writes the
+    # internal CA per OS family — "Build Java TrustStore (JKS)" needs to
+    # read it back from the same place.
+    internal_ca_path: >-
+      {%- if ansible_facts['os_family'] == 'Debian' -%}
+      /usr/local/share/ca-certificates/internal/internal-ca.crt
+      {%- elif ansible_facts['os_family'] == 'RedHat' -%}
+      /etc/pki/ca-trust/source/anchors/internal-ca.crt
+      {%- elif ansible_facts['os_family'] == 'Alpine' -%}
+      /usr/local/share/ca-certificates/internal-ca.crt
+      {%- elif ansible_facts['os_family'] == 'Archlinux' -%}
+      /etc/ca-certificates/trust-source/anchors/internal-ca.crt
+      {%- endif -%}
+
+- name: Install OpenJDK 17
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [openjdk-17-jre-headless]
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Install OpenJDK 17 (RHEL)
+  ansible.builtin.dnf:
+    name: java-17-openjdk-headless
+    state: present
+  when: ansible_facts['os_family'] == "RedHat"
+
+- name: Create certificate directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/ssl/private
+    - /etc/ssl/certs
+    - /etc/pki/java
+    - /usr/local/share/ca-certificates/internal
+
+- name: Install ca-certificates package
+  ansible.builtin.package:
+    name: ca-certificates
+    state: present
+
+- name: Deploy CA chain PEM (Debian/Ubuntu)
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /usr/local/share/ca-certificates/internal/internal-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Debian"
+  register: ca_deployed_debian
+
+- name: Deploy CA chain PEM (RHEL/CentOS)
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/pki/ca-trust/source/anchors/internal-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "RedHat"
+  register: ca_deployed_rhel
+
+- name: Deploy CA chain PEM (Alpine)
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /usr/local/share/ca-certificates/internal-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Alpine"
+  register: ca_deployed_alpine
+
+- name: Deploy CA chain PEM (Arch)
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/ca-certificates/trust-source/anchors/internal-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Archlinux"
+  register: ca_deployed_arch
+
+# Optional, environment-level extra_trusted_ca_pem — a corporate MITM/inspection
+# proxy's own CA (Zscaler, Netskope, etc.), not this app's own internal CA.
+# Found necessary via a real build: on this network, outbound HTTPS from a
+# Docker-hosted target container to an external apt repo (repo.mongodb.org)
+# is intercepted and re-signed by a Zscaler proxy, so any product installing
+# packages from outside the OS's own mirrors fails with a certificate trust
+# error unless the proxy's CA is trusted too. Deployed into the same trust
+# store as the internal CA (and triggers the same update-ca-certificates run)
+# so it applies to every host, regardless of which products it runs — set
+# per-environment since not every deployment sits behind the same proxy (or
+# any proxy at all).
+- name: Deploy extra trusted CA (Debian/Ubuntu)
+  ansible.builtin.copy:
+    content: "{{ extra_trusted_ca_pem }}"
+    dest: /usr/local/share/ca-certificates/internal/extra-trusted-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Debian" and (extra_trusted_ca_pem | default('')) | length > 0
+  register: extra_ca_deployed_debian
+
+- name: Deploy extra trusted CA (RHEL/CentOS)
+  ansible.builtin.copy:
+    content: "{{ extra_trusted_ca_pem }}"
+    dest: /etc/pki/ca-trust/source/anchors/extra-trusted-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "RedHat" and (extra_trusted_ca_pem | default('')) | length > 0
+  register: extra_ca_deployed_rhel
+
+- name: Deploy extra trusted CA (Alpine)
+  ansible.builtin.copy:
+    content: "{{ extra_trusted_ca_pem }}"
+    dest: /usr/local/share/ca-certificates/extra-trusted-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Alpine" and (extra_trusted_ca_pem | default('')) | length > 0
+  register: extra_ca_deployed_alpine
+
+- name: Deploy extra trusted CA (Arch)
+  ansible.builtin.copy:
+    content: "{{ extra_trusted_ca_pem }}"
+    dest: /etc/ca-certificates/trust-source/anchors/extra-trusted-ca.crt
+    mode: "0644"
+  when: ansible_facts['os_family'] == "Archlinux" and (extra_trusted_ca_pem | default('')) | length > 0
+  register: extra_ca_deployed_arch
+
+- name: Update system CA trust store (Debian/Ubuntu)
+  ansible.builtin.command: update-ca-certificates
+  when: >
+    ansible_facts['os_family'] == "Debian" and
+    ((ca_deployed_debian.changed | default(false)) or (extra_ca_deployed_debian.changed | default(false)))
+  changed_when: true
+
+- name: Update system CA trust store (RHEL/CentOS)
+  ansible.builtin.command: update-ca-trust extract
+  when: >
+    ansible_facts['os_family'] == "RedHat" and
+    ((ca_deployed_rhel.changed | default(false)) or (extra_ca_deployed_rhel.changed | default(false)))
+  changed_when: true
+
+- name: Update system CA trust store (Alpine)
+  ansible.builtin.command: update-ca-certificates
+  when: >
+    ansible_facts['os_family'] == "Alpine" and
+    ((ca_deployed_alpine.changed | default(false)) or (extra_ca_deployed_alpine.changed | default(false)))
+  changed_when: true
+
+- name: Update system CA trust store (Arch)
+  ansible.builtin.command: trust extract-compat
+  when: >
+    ansible_facts['os_family'] == "Archlinux" and
+    ((ca_deployed_arch.changed | default(false)) or (extra_ca_deployed_arch.changed | default(false)))
+  changed_when: true
+
+- name: Deploy server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/ssl/certs/server.pem
+    mode: "0644"
+
+- name: Deploy server private key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/ssl/private/server-key.pem
+    mode: "0600"
+
+- name: Deploy full chain (cert + CA)
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}\n{{ ca_chain_pem }}"
+    dest: /etc/ssl/certs/server-fullchain.pem
+    mode: "0644"
+
+- name: Build Java TrustStore (JKS)
+  ansible.builtin.shell: |
+    rm -f /etc/pki/java/truststore.jks
+    keytool -importcert -noprompt \
+      -alias internal-ca \
+      -file {{ internal_ca_path }} \
+      -keystore /etc/pki/java/truststore.jks \
+      -storepass "{{ truststore_password }}" \
+      -storetype JKS
+  changed_when: true
+
+- name: Create PKCS12 from server cert + key
+  ansible.builtin.shell: |
+    openssl pkcs12 -export \
+      -in /etc/ssl/certs/server-fullchain.pem \
+      -inkey /etc/ssl/private/server-key.pem \
+      -out /tmp/server.p12 \
+      -passout pass:"{{ keystore_password }}" \
+      -name server
+  changed_when: true
+
+- name: Build Java KeyStore (JKS) from PKCS12
+  ansible.builtin.shell: |
+    rm -f /etc/pki/java/keystore.jks
+    keytool -importkeystore \
+      -srckeystore /tmp/server.p12 \
+      -srcstoretype PKCS12 \
+      -srcstorepass "{{ keystore_password }}" \
+      -destkeystore /etc/pki/java/keystore.jks \
+      -deststoretype JKS \
+      -deststorepass "{{ keystore_password }}" \
+      -noprompt
+    rm -f /tmp/server.p12
+  changed_when: true
+
+- name: Set KeyStore permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    mode: "0640"
+  loop:
+    - /etc/pki/java/truststore.jks
+    - /etc/pki/java/keystore.jks

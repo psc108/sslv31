@@ -1,0 +1,63 @@
+[
+  {
+    "key": "rca-vra-instance-not-recorded",
+    "category": "vRA/Fulfilment",
+    "severity": "high",
+    "pattern": "instances to be synced:\\s*\\[\\]|Syncing \\d+ instances out of \\d+ expired ones|externalServiceInstanceIds=\\[\\]|serviceInstanceIds=\\[\\]",
+    "title": "Order fulfils successfully but no CSO Service Instance is created (vRA adapter never queries the deployment API)",
+    "plain_english": "vRealize Automation provisions the requested resources correctly and the order/fulfilment chain reports SUCCESS end to end, but the Service Instances view stays empty for every user and the order detail page shows no resulting resource. The failure is silent — no error, exception, or non-200 response anywhere in the flow. The vRA adapter submits the blueprint request and polls it to completion, but never calls the deployment API (/deployment/api/deployments/{id} or any deployment-resources endpoint) to find out what the deployment actually produced, so CSO has nothing from which to construct a service instance even though it captured the deploymentId in the blueprint-request payload.",
+    "causes": [
+      "Fulfilment system (VRA) import configuration or associated customer options are missing the settings that govern deployment/resource discovery.",
+      "The service design has no resource or instance mapping section declaring what constitutes a service instance for this blueprint.",
+      "The vRA service account used by the adapter (e.g. svc_uc6_vra05) may only be scoped to the blueprint and IaaS APIs, not the deployment API — a scope restriction would fully explain the adapter never calling it.",
+      "If configuration on all of the above is confirmed correct, this is a product defect: the adapter implements provisioning and completion polling but not resource discovery.",
+      "Ruled out already — do not re-investigate these: authorisation/403 (zero occurrences across the whole log), access-predicate filtering (predicate is permissive for this customer), provisioning failure (vRA returned 202 and reached SUCCESS, resources exist on the vRA server), the separate Keystone customerVisibilityMode=NONE defect (behaviour identical before/after that fix), and fulfilment reporting failure (every stage reports SUCCESS)."
+    ],
+    "fix_steps": [
+      "Cheapest check first: confirm whether the vRA service account has read access to the deployment API, not just blueprint/IaaS — a missing scope explains the adapter's behaviour completely.",
+      "Inspect the fulfilment system's import configuration and associated customer options for settings governing deployment and resource discovery.",
+      "Inspect the service design for a resource/instance mapping section; compare against a service design on this or another estate that is known to produce service instances correctly.",
+      "Reproduce/confirm with: zcat application.log-<date>.gz | grep -oE \"VraClient.*(GET|POST|PUT) https://[^ ?]+\" | sed 's#.*https://[^/]*##' | sort -u  — confirm no call to /deployment/api/deployments/{id} appears for the order's deploymentId.",
+      "Only escalate to the vendor once configuration on the above has been excluded — quote the reference transaction (order, blueprint request, deploymentId) from the RCA.",
+      "Separately, reconcile any vRA deployments already provisioned without a corresponding CSO service instance to avoid orphaned infrastructure while this is open."
+    ],
+    "see_also": ["rca-vra-consumer-race", "a9b2dfd1-3813-45b6-93cd-111c0b959509"]
+  },
+  {
+    "key": "rca-vra-consumer-race",
+    "category": "RabbitMQ",
+    "severity": "medium",
+    "pattern": "does not have any external fulfillment associated|OrderItemFulfillmentIdSetConsumer",
+    "title": "OrderItemFulfillmentIdSetConsumer evaluates before the external fulfilment exists and does not retry",
+    "plain_english": "The service-instances event consumer for orderItem/fulfillmentIdSet can run before the external service fulfilment record has been created (observed 13 seconds early), finds nothing to sync, and marks the message processed successfully instead of retrying. This is a genuine race condition, but on its own it does not explain a persistently empty Service Instances view — even if the consumer ran at the right time, the instance list would still be empty because the adapter never populates it (see the linked vRA deployment-API entry).",
+    "causes": [
+      "The consumer for this event type acknowledges/marks-processed on a \"nothing to sync\" result instead of scheduling a retry or re-queueing.",
+      "Event ordering between fulfilment creation and the orderItem/fulfillmentIdSet event is not guaranteed — the consumer can legitimately fire first."
+    ],
+    "fix_steps": [
+      "Raise as a separate defect from the deployment-API gap — fixing this alone will not populate service instances.",
+      "Change the consumer to retry/re-queue when the service fulfilment has no external fulfilment yet, rather than treating an empty result as terminal.",
+      "Confirm via: grep -iE \"instances to be synced|externalServiceInstanceIds|serviceInstanceIds\" application.log — look for the consumer firing before \"Creating external service fulfillment\" for the same fulfilment id."
+    ],
+    "see_also": ["rca-vra-instance-not-recorded", "rmq-004"]
+  },
+  {
+    "key": "rca-vra-country-expression",
+    "category": "Other",
+    "severity": "low",
+    "pattern": "Failed to evaluate country|ProductDecompositionService.*not defined|\\\"test\\\" is not defined",
+    "title": "Service design country expression evaluates a bare identifier and silently fails pricing decomposition",
+    "plain_english": "A service design's country expression is written as a bare identifier (e.g. test) rather than a quoted string literal or a field binding, so it resolves against an undefined symbol and ProductDecompositionService logs a warning on every price decomposition during ordering. Ordering still completes and a price is returned, but country-based pricing silently fails, which can produce incorrect figures wherever country-specific rates are configured.",
+    "causes": [
+      "The country expression in the service design is an unquoted bare word instead of a string literal.",
+      "The expression is not bound to the customer's country attribute, so there is nothing valid for it to resolve against."
+    ],
+    "fix_steps": [
+      "Edit the service design's country expression to either a quoted string literal (e.g. \"GB\") or a proper binding to the customer country attribute.",
+      "Re-run an order through the same service design and confirm the ProductDecompositionService warning no longer appears in the fulfilment log.",
+      "Audit other service designs for the same unquoted-identifier pattern in expression fields, since this class of mistake is easy to repeat across designs.",
+      "If country-specific rate cards are in use, check historical orders through this design for incorrect pricing while the expression was broken."
+    ],
+    "see_also": []
+  }
+]

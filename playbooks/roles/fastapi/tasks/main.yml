@@ -1,0 +1,6 @@
+---
+# FastAPI/Backend role — Stage 6 implementation placeholder.
+
+- name: FastAPI deployment placeholder
+  ansible.builtin.debug:
+    msg: "FastAPI/Backend role will be fully implemented in Stage 6"

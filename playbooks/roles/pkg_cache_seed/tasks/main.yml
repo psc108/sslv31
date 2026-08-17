@@ -1,0 +1,132 @@
+---
+# pkg_cache_seed role — downloads a set of apt packages (and their recursive
+# dependencies) into a local directory and builds an apt repo index there,
+# so it can be served to other hosts as a local package source. Unlike
+# installing the packages directly, this only downloads .deb files — it
+# never unpacks/configures them — so it's the fetch-only counterpart to the
+# actual install that happens later, on the consuming hosts, against this
+# pre-seeded cache instead of the network.
+#
+# pkg_cache_seed_dir defaults to a shared Docker named volume's mount point
+# (/mnt/pkg-cache/apt — see _ensure_docker_hosts_ready in build_manager.py),
+# bound into this host and every consumer host directly at container
+# creation. Not an NFS export: an earlier design served this over NFS, but
+# running the actual NFS kernel server (nfsd) inside a container turned out
+# to be unstable on this Docker host — live-testing found the nfs-server
+# container's whole process tree repeatedly crashing and silently auto-
+# restarting while every other container in the same build stayed rock
+# solid. A named volume mounted into multiple containers achieves the same
+# "single shared filesystem" goal without any network filesystem protocol
+# at all, since every host here is already a container on the same engine.
+#
+# dpkg-dev is baked into the target image at build time (docker/Dockerfile.target),
+# not installed here live — see Documentation/build_manager_operations_guide.md,
+# "Golden-path template pitfalls: the pkg_cache_seed live-libc6-upgrade
+# incident" for the full root-cause writeup. Installing dpkg-dev fresh over
+# SSH pulled in a live libc6 (glibc) upgrade, which crashed this container's
+# whole process tree every time (confirmed via direct reproduction). No other
+# product in the catalogue happens to trigger a libc6 upgrade, which is why
+# this was the only role that ever hit it.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    pkg_cache_seed_dir: "{{ product_vars.pkg_cache_seed_dir | default('/mnt/pkg-cache/apt') }}"
+    pkg_cache_seed_packages: "{{ product_vars.pkg_cache_seed_packages | default([]) }}"
+
+- name: Create package cache directory
+  ansible.builtin.file:
+    path: "{{ pkg_cache_seed_dir }}"
+    state: directory
+    mode: "0755"
+  when: pkg_cache_seed_packages | length > 0
+
+# ============================================================
+# Debian / Ubuntu
+# ============================================================
+
+- name: Download packages and their resolved dependencies (Debian)
+  # apt-cache depends --recurse (the previous approach here) walks into
+  # *every* alternative in an OR-dependency group (e.g. gcc-9|gcc-10|...|
+  # gcc-14, or the clang-14..20 "cc" alternatives apache2-dev's build chain
+  # pulls in) rather than the one apt would actually pick — found via a real
+  # seed run where a 7-package request (apache2, apache2-dev, python3-dev,
+  # gcc, libffi-dev, libssl-dev, pkg-config) expanded to 200-300+ packages
+  # and turned a ~5 minute step into 25+ minutes. apt-get install
+  # --print-uris uses apt's real dependency resolver instead, which picks
+  # exactly one candidate per alternative/virtual group — the same set a
+  # genuine `apt-get install` of these packages would fetch, nothing more.
+  ansible.builtin.shell: |
+    cd {{ pkg_cache_seed_dir }}
+    apt-get install --no-install-recommends --print-uris -qq \
+      {{ pkg_cache_seed_packages | join(' ') }} 2>/dev/null \
+      | grep "^'http" | cut -d"'" -f2 | sort -u \
+      | xargs -r -n1 -P4 curl -sS -O
+  args:
+    chdir: "{{ pkg_cache_seed_dir }}"
+  changed_when: true
+  when: ansible_facts.os_family == "Debian" and pkg_cache_seed_packages | length > 0
+
+- name: Build apt Packages index (Debian)
+  ansible.builtin.shell: |
+    cd {{ pkg_cache_seed_dir }}
+    dpkg-scanpackages --multiversion . > Packages
+    gzip -9 -k -f Packages
+  args:
+    chdir: "{{ pkg_cache_seed_dir }}"
+  changed_when: true
+  when: ansible_facts.os_family == "Debian" and pkg_cache_seed_packages | length > 0
+
+- name: Count cached .deb files (Debian)
+  ansible.builtin.find:
+    paths: "{{ pkg_cache_seed_dir }}"
+    patterns: "*.deb"
+  register: pkg_cache_seed_deb_files
+  when: ansible_facts.os_family == "Debian" and pkg_cache_seed_packages | length > 0
+
+- name: Report cache seed result (Debian)
+  ansible.builtin.debug:
+    msg: "Package cache seeded: {{ pkg_cache_seed_deb_files.matched }} .deb files in {{ pkg_cache_seed_dir }}"
+  when: ansible_facts.os_family == "Debian" and pkg_cache_seed_packages | length > 0
+
+# ============================================================
+# RHEL / CentOS
+# ============================================================
+
+- name: Download RPMs and their resolved dependencies (RHEL)
+  # dnf install --downloadonly uses dnf's real dependency resolver (same
+  # spirit as the apt --print-uris fix above) — it picks exactly one
+  # candidate per alternative/virtual-provides group and downloads the full
+  # real transaction's package set without installing anything, so this
+  # can't hit the same kind of explosion apt-cache depends --recurse did.
+  ansible.builtin.shell: |
+    cd {{ pkg_cache_seed_dir }}
+    dnf install --downloadonly --downloaddir={{ pkg_cache_seed_dir }} \
+      --setopt=install_weak_deps=False -y \
+      {{ pkg_cache_seed_packages | join(' ') }}
+  args:
+    chdir: "{{ pkg_cache_seed_dir }}"
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat" and pkg_cache_seed_packages | length > 0
+
+- name: Build rpm repository index (RHEL)
+  # createrepo_c is baked into the RHEL8 target image at build time, not
+  # installed here live — it isn't available in any of UBI8's own
+  # free-access repos (see docker/Dockerfile.target-rhel8 for the full
+  # story), so a live dnf install of it here would just fail.
+  ansible.builtin.command: createrepo_c {{ pkg_cache_seed_dir }}
+  args:
+    chdir: "{{ pkg_cache_seed_dir }}"
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat" and pkg_cache_seed_packages | length > 0
+
+- name: Count cached .rpm files (RHEL)
+  ansible.builtin.find:
+    paths: "{{ pkg_cache_seed_dir }}"
+    patterns: "*.rpm"
+  register: pkg_cache_seed_rpm_files
+  when: ansible_facts.os_family == "RedHat" and pkg_cache_seed_packages | length > 0
+
+- name: Report cache seed result (RHEL)
+  ansible.builtin.debug:
+    msg: "Package cache seeded: {{ pkg_cache_seed_rpm_files.matched }} .rpm files in {{ pkg_cache_seed_dir }}"
+  when: ansible_facts.os_family == "RedHat" and pkg_cache_seed_packages | length > 0

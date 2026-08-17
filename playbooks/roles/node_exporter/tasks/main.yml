@@ -1,0 +1,86 @@
+---
+- name: Remove existing node_exporter
+  file:
+    path: /usr/local/bin/node_exporter
+    state: absent
+
+- name: Remove existing systemd unit
+  file:
+    path: /etc/systemd/system/node_exporter.service
+    state: absent
+
+- name: Create node_exporter user
+  user:
+    name: node_exporter
+    system: yes
+    shell: /usr/sbin/nologin
+    create_home: no
+
+- name: Download node_exporter
+  get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz"
+    dest: /tmp/node_exporter.tar.gz
+    mode: "0644"
+
+- name: Extract node_exporter
+  unarchive:
+    src: /tmp/node_exporter.tar.gz
+    dest: /tmp/
+    remote_src: yes
+
+- name: Install node_exporter binary
+  copy:
+    src: /tmp/node_exporter-1.8.2.linux-amd64/node_exporter
+    dest: /usr/local/bin/node_exporter
+    remote_src: yes
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create systemd service
+  copy:
+    dest: /etc/systemd/system/node_exporter.service
+    content: |
+      [Unit]
+      Description=Prometheus Node Exporter
+      After=network-online.target
+
+      [Service]
+      User=node_exporter
+      Group=node_exporter
+      Type=simple
+      ExecStart=/usr/local/bin/node_exporter \
+        --web.listen-address=:{{ node_exporter_port | default(9100) }} \
+        {% for collector in (node_exporter_collectors | default('')).split(',') | map('trim') | select | list %}
+        --collector.{{ collector }} \
+        {% endfor %}
+
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Clean up download
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/node_exporter.tar.gz
+    - /tmp/node_exporter-1.8.2.linux-amd64
+
+- name: Enable and start node_exporter
+  systemd:
+    name: node_exporter
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Verify node_exporter is listening
+  wait_for:
+    port: "{{ node_exporter_port | default(9100) }}"
+    delay: 2
+    timeout: 15

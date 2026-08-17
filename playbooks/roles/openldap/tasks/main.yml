@@ -1,0 +1,156 @@
+---
+- name: Purge existing slapd
+  apt:
+    name: [slapd, ldap-utils]
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Remove existing LDAP data
+  file:
+    path: /var/lib/ldap
+    state: absent
+
+# Bare ldap_* vars were never actually wired up — site.yml's product loop
+# only sets product_vars (the whole dict), never flattens it into bare names.
+# ldap_domain/ldap_organisation/ldap_admin_password had no | default(...)
+# fallback at all, so every build of this role failed outright on an
+# undefined-variable error at the very first task. Every reference is now
+# product_vars.<key>, matching ldap_*'s own config_schema keys in
+# catalogue_service.py and the working pattern already used by rabbitmq/mysql.
+
+- name: Preseed slapd configuration
+  debconf:
+    name: slapd
+    question: "{{ item.question }}"
+    value: "{{ item.value }}"
+    vtype: "{{ item.vtype }}"
+  loop:
+    - { question: "slapd/internal/generated_adminpw", value: "{{ product_vars.ldap_admin_password }}", vtype: "password" }
+    - { question: "slapd/password1", value: "{{ product_vars.ldap_admin_password }}", vtype: "password" }
+    - { question: "slapd/password2", value: "{{ product_vars.ldap_admin_password }}", vtype: "password" }
+    - { question: "slapd/domain", value: "{{ product_vars.ldap_domain }}", vtype: "string" }
+    - { question: "shared/organization", value: "{{ product_vars.ldap_organisation }}", vtype: "string" }
+    - { question: "slapd/no_configuration", value: "false", vtype: "boolean" }
+    - { question: "slapd/purge_database", value: "true", vtype: "boolean" }
+  no_log: true
+
+- name: Install slapd and ldap-utils
+  apt:
+    name: [slapd, ldap-utils]
+    state: present
+    update_cache: yes
+
+- name: Reconfigure slapd
+  command: dpkg-reconfigure -f noninteractive slapd
+  changed_when: true
+
+- name: Create LDAP SSL directory
+  file:
+    path: /etc/ldap/ssl
+    state: directory
+    owner: openldap
+    group: openldap
+    mode: "0750"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Deploy OpenLDAP server certificate
+  copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/ldap/ssl/server.crt
+    owner: openldap
+    group: openldap
+    mode: "0644"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Deploy OpenLDAP server key
+  copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/ldap/ssl/server.key
+    owner: openldap
+    group: openldap
+    mode: "0600"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Deploy OpenLDAP CA chain
+  copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/ldap/ssl/ca.crt
+    owner: openldap
+    group: openldap
+    mode: "0644"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Configure TLS via ldapmodify
+  copy:
+    dest: /tmp/ldap_tls.ldif
+    content: |
+      dn: cn=config
+      changetype: modify
+      replace: olcTLSCACertificateFile
+      olcTLSCACertificateFile: /etc/ldap/ssl/ca.crt
+      -
+      replace: olcTLSCertificateFile
+      olcTLSCertificateFile: /etc/ldap/ssl/server.crt
+      -
+      replace: olcTLSCertificateKeyFile
+      olcTLSCertificateKeyFile: /etc/ldap/ssl/server.key
+    mode: "0600"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+# ldapmodify -H ldapi:/// needs slapd already accepting connections on that
+# socket — right after "Reconfigure slapd" it usually isn't there yet, which
+# made "Apply TLS config" below fail every time with "Can't contact LDAP
+# server" (silently, since it's ignore_errors: yes) and left the TLS cert
+# paths never actually applied to cn=config: slapd would go on to listen on
+# 636 with no certificate at all, failing the TLS handshake outright.
+# Restarting explicitly and waiting for the ldapi socket first guarantees
+# the modify below actually lands.
+- name: Restart slapd before applying TLS config
+  systemd:
+    name: slapd
+    state: restarted
+    daemon_reload: yes
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Wait for slapd ldapi socket
+  ansible.builtin.wait_for:
+    path: /run/slapd/ldapi
+    timeout: 30
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Apply TLS config
+  command: ldapmodify -Y EXTERNAL -H ldapi:/// -f /tmp/ldap_tls.ldif
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+  register: ldap_tls_apply
+  changed_when: ldap_tls_apply.rc == 0
+  failed_when: ldap_tls_apply.rc != 0 and 'no attributes to change' not in ldap_tls_apply.stderr
+
+# The catalogue advertises port 636 (LDAPS) alongside 389, but slapd's
+# packaged default (SLAPD_SERVICES="ldap:/// ldapi:///") never actually adds
+# an ldaps:// listener — meaning TLS was only ever reachable via StartTLS on
+# 389, not a real dedicated TLS port. Adding it here so 636 genuinely works.
+- name: Enable LDAPS listener on 636
+  ansible.builtin.lineinfile:
+    path: /etc/default/slapd
+    regexp: "^SLAPD_SERVICES="
+    line: 'SLAPD_SERVICES="ldap:/// ldaps:/// ldapi:///"'
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: Enable and restart slapd
+  systemd:
+    name: slapd
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Verify LDAP is running
+  command: ldapsearch -x -H ldap://localhost -b "" -s base namingContexts
+  register: ldap_check
+  changed_when: false
+  ignore_errors: yes
+
+- name: Show LDAP base DN
+  debug:
+    var: ldap_check.stdout_lines
+  when: ldap_check.rc == 0

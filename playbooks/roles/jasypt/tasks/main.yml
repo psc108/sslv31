@@ -1,0 +1,30 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    jasypt_install_path: "{{ product_vars.jasypt_install_path | default('/opt/jasypt') }}"
+
+- name: Purge existing Jasypt installation
+  ansible.builtin.file:
+    path: "{{ jasypt_install_path }}"
+    state: absent
+
+- name: Create Jasypt directory
+  ansible.builtin.file:
+    path: "{{ jasypt_install_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Download Jasypt
+  ansible.builtin.shell: |
+    curl -fsSL -o {{ jasypt_install_path }}/jasypt-1.9.3.jar \
+      https://repo1.maven.org/maven2/org/jasypt/jasypt/1.9.3/jasypt-1.9.3.jar
+  changed_when: true
+
+- name: Verify Jasypt jar
+  ansible.builtin.shell: java -jar {{ jasypt_install_path }}/jasypt-1.9.3.jar 2>&1 | head -3 || true
+  register: jasypt_check
+  changed_when: false
+
+- name: Show Jasypt status
+  ansible.builtin.debug:
+    msg: "Jasypt installed at {{ jasypt_install_path }}/jasypt-1.9.3.jar"

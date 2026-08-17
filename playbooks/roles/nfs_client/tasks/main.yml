@@ -1,0 +1,40 @@
+---
+- name: Merge product vars
+  set_fact:
+    nfs_mounts: "{{ product_vars.nfs_mounts | default([]) }}"
+
+- name: Install NFS client (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [nfs-common]
+  when: ansible_facts.os_family == "Debian"
+
+# nfs-utils is the single combined client+server package on RHEL — there's
+# no separate "nfs-common"-equivalent client-only package the way Debian
+# splits it.
+- name: Install NFS client (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nfs-utils]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Create mount point directories
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ nfs_mounts }}"
+
+- name: Mount NFS shares
+  # Fully-qualified: ansible-core 2.10+ moved `mount` out of ansible.builtin
+  # into this separate collection (installed at image-build time in
+  # docker/Dockerfile) — the bare `mount:` name silently resolves to nothing
+  # ("couldn't resolve module/action 'mount'") if the collection is ever
+  # missing, rather than failing at parse time.
+  ansible.posix.mount:
+    src: "{{ item.src }}"
+    path: "{{ item.path }}"
+    fstype: nfs
+    opts: "{{ item.opts | default('defaults') }}"
+    state: "{{ item.state | default('mounted') }}"
+  loop: "{{ nfs_mounts }}"

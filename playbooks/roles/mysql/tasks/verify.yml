@@ -1,0 +1,42 @@
+---
+# Verify MySQL TLS is working
+
+- name: "TLS_VERIFY mysql"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.mysql_port | default(3306) }} -starttls mysql 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"mysql\",\"port\":{{ product_vars.mysql_port | default(3306) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"mysql\",\"port\":{{ product_vars.mysql_port | default(3306) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: mysql_tls_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT mysql"
+  ansible.builtin.debug:
+    msg: "{{ mysql_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+
+- name: "TLS_VERIFY mysql require_secure_transport"
+  ansible.builtin.shell: |
+    ssl_status=$(mysql --ssl-mode=REQUIRED -u root -p'{{ product_vars.mysql_root_password | default("root") }}' -e "SHOW VARIABLES LIKE 'require_secure_transport';" 2>/dev/null | grep -i "require_secure_transport" | awk '{print $2}')
+    ssl_cipher=$(mysql --ssl-mode=REQUIRED -u root -p'{{ product_vars.mysql_root_password | default("root") }}' -e "SHOW STATUS LIKE 'Ssl_cipher';" 2>/dev/null | grep -i "Ssl_cipher" | awk '{print $2}')
+    if [ -n "$ssl_cipher" ] && [ "$ssl_cipher" != "" ]; then
+      echo "TLS_RESULT:{\"product\":\"mysql-session\",\"port\":{{ product_vars.mysql_port | default(3306) }},\"status\":\"ok\",\"require_secure_transport\":\"$ssl_status\",\"session_cipher\":\"$ssl_cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"mysql-session\",\"port\":{{ product_vars.mysql_port | default(3306) }},\"status\":\"failed\",\"error\":\"Could not establish SSL session to MySQL\"}"
+    fi
+  register: mysql_session_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: "TLS_OUTPUT mysql-session"
+  ansible.builtin.debug:
+    msg: "{{ mysql_session_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"

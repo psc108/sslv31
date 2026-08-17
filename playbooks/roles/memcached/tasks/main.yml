@@ -1,0 +1,33 @@
+---
+- name: Purge existing memcached
+  apt:
+    name: memcached
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Install memcached
+  apt:
+    name: [memcached, libmemcached-tools]
+    state: present
+    update_cache: yes
+
+- name: Configure memcached
+  copy:
+    dest: /etc/memcached.conf
+    content: |
+      -l {{ memcached_listen | default('0.0.0.0') }}
+      -p {{ memcached_port | default(11211) }}
+      -m {{ memcached_memory_mb | default(64) }}
+      -c {{ memcached_max_connections | default(1024) }}
+      -u memcache
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and restart memcached
+  systemd:
+    name: memcached
+    enabled: yes
+    state: restarted
+    daemon_reload: yes

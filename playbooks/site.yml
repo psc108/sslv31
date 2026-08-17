@@ -1,0 +1,46 @@
+---
+# Site playbook — full environment build.
+# Runs all provisioning stages in order.
+#
+# Base provisioning and product deployment run as a single play, one host at
+# a time (serial: 1), so each host fully finishes before the next starts.
+# Found via a real live build of a 5-host stack: running every host
+# concurrently overloaded this Docker host enough to break SSH mid-task
+# ("Data could not be sent to remote host") during simultaneous heavy package
+# installs. Host processing order follows the template spec's "hosts" list
+# order (see inventory_service.py's _generate_environment_inventory), so a
+# template can control build order by how it declares its hosts.
+
+- name: Base host provisioning and product deployment
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+  serial: 1
+  roles:
+    - base
+
+  tasks:
+    - name: Get product list for this host
+      ansible.builtin.set_fact:
+        my_products: "{{ host_products[service_role] | default([]) }}"
+      when: host_products is defined
+
+    # loop_var is renamed from the default "item" — every included role runs
+    # with this loop still active, so any task inside it (or inside a
+    # further include_tasks it reaches, e.g. common/tasks/sudo_users.yml)
+    # that ALSO loops with the default "item" name collides with this one.
+    # That collision caused a real, previously silent bug (see
+    # common/tasks/sudo_users.yml's own comment) and still fires Ansible's
+    # own "variable already in use" warning for every other product loop
+    # even where it's harmless — renaming it here at the source means
+    # nothing nested under it needs to care what name its own loops use.
+    - name: Include product roles
+      ansible.builtin.include_role:
+        name: "{{ bm_product.ansible_role }}"
+      vars:
+        product_vars: "{{ bm_product.vars | default({}) }}"
+      loop: "{{ my_products | default([]) }}"
+      loop_control:
+        loop_var: bm_product
+        label: "{{ bm_product.ansible_role }}"
+      when: my_products is defined and my_products | length > 0

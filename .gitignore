@@ -1,0 +1,52 @@
+# IDE
+.idea/
+*.iml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Environment / secrets
+backend/.env
+*.db
+*.sqlite
+*.key
+*.pem
+*.p12
+*.jks
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Build artefacts
+docker/build_output.txt
+frontend/tsconfig.tsbuildinfo
+
+# Temp / scratch
+tmp/
+probe*.py
+probe*.txt
+probe*.json
+read_env_page*.py
+read_env_page*.txt
+check_*.py
+js_guide.txt
+storefront_out.txt
+report.json
+subreports.json
+test-bundle.zip
+backend_lb_config.json
+frontend_lb_config.json
+3}
+
+# Neural (separate sub-project, not part of this repo)
+Neural/
+
+# Old snapshot directory
+ssl-main/

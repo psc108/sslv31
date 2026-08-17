@@ -1,0 +1,36 @@
+---
+# Include with: ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+# Expects: sudo_users_list (comma-separated string), sudo_nopasswd (bool)
+#
+# loop_var is explicitly renamed away from the default "item" — every caller
+# of this file is itself reached via site.yml's "Include product roles" task,
+# which loops over that host's products using the default "item" var. With
+# both loops sharing that name, Ansible's own diagnostics ("The variable
+# 'item' is already in use... unexpected behavior") turned out to be exactly
+# that: the when: clause on these tasks silently evaluated false regardless
+# of sudo_users_list's real value, so no product's configured sudo users
+# were ever actually created, on any host — confirmed with a minimal
+# reproduction (same nested-loop shape, debug-printed sudo_users_list as
+# non-empty immediately beforehand, task still skipped; renaming loop_var
+# alone fixed it).
+
+- name: Create sudo users
+  ansible.builtin.user:
+    name: "{{ sudo_user }}"
+    shell: /bin/bash
+    create_home: true
+  loop: "{{ sudo_users_list.split(',') | map('trim') | select | list }}"
+  loop_control:
+    loop_var: sudo_user
+  when: sudo_users_list | default('') | length > 0
+
+- name: Add users to sudoers
+  ansible.builtin.copy:
+    content: "{{ sudo_user }} ALL=(ALL) {{ 'NOPASSWD: ' if (sudo_nopasswd | default(false) | bool) else '' }}ALL\n"
+    dest: "/etc/sudoers.d/{{ sudo_user }}"
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ sudo_users_list.split(',') | map('trim') | select | list }}"
+  loop_control:
+    loop_var: sudo_user
+  when: sudo_users_list | default('') | length > 0

@@ -1,0 +1,50 @@
+{% if nginx_upstream_servers is defined and nginx_upstream_servers | length > 0 %}
+upstream backend {
+{% for server in nginx_upstream_servers %}
+    server {{ server }};
+{% endfor %}
+}
+{% endif %}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{ nginx_server_name | default('_') }};
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS server
+server {
+    listen {{ nginx_listen_port | default(443) }} ssl default_server;
+    listen [::]:{{ nginx_listen_port | default(443) }} ssl default_server;
+
+    server_name {{ nginx_server_name | default('_') }};
+
+    ssl_certificate /etc/nginx/ssl/server-fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/server-key.pem;
+
+{% if nginx_upstream_servers is defined and nginx_upstream_servers | length > 0 %}
+    location / {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+{% else %}
+    root {{ nginx_root | default('/var/www/html') }};
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+{% endif %}
+
+    # Health check endpoint
+    location /health {
+        access_log off;
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+}

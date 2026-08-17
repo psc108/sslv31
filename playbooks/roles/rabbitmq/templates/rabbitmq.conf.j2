@@ -1,0 +1,25 @@
+# RabbitMQ TLS Configuration — managed by Build Manager
+
+listeners.ssl.default = {{ rabbitmq_ssl_port }}
+ssl_options.cacertfile = {{ rabbitmq_ssl_cacertfile }}
+ssl_options.certfile   = {{ rabbitmq_ssl_certfile }}
+ssl_options.keyfile    = {{ rabbitmq_ssl_keyfile }}
+ssl_options.versions.1 = {{ rabbitmq_ssl_version_1 }}
+ssl_options.versions.2 = {{ rabbitmq_ssl_version_2 }}
+ssl_options.verify     = {{ rabbitmq_ssl_verify }}
+ssl_options.fail_if_no_peer_cert = {{ rabbitmq_ssl_fail_if_no_peer_cert }}
+
+listeners.tcp = {{ rabbitmq_tcp_listener }}
+
+{% if rabbitmq_enable_management | bool %}
+management.ssl.port       = {{ rabbitmq_management_ssl_port }}
+management.ssl.cacertfile = {{ rabbitmq_ssl_cacertfile }}
+management.ssl.certfile   = {{ rabbitmq_ssl_certfile }}
+management.ssl.keyfile    = {{ rabbitmq_ssl_keyfile }}
+{% endif %}
+
+heartbeat = {{ rabbitmq_heartbeat }}
+
+log.file.level = {{ rabbitmq_log_level }}
+
+loopback_users = {{ rabbitmq_loopback_users }}

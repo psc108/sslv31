@@ -1,0 +1,58 @@
+---
+# Verify nginx_lb TLS is working. Listen port is always 443 — unlike
+# sibling roles this one has no product_vars port override; both
+# templates/lb-server.conf.j2 and this role's own tasks/main.yml hard-code
+# it (see "Deploy LB server block"), so the check does too.
+
+- name: "TLS_VERIFY nginx_lb"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:443 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"nginx_lb\",\"port\":443,\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"nginx_lb\",\"port\":443,\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: nginx_lb_tls_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT nginx_lb"
+  ansible.builtin.debug:
+    msg: "{{ nginx_lb_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+
+# --- Prove re-encryption to upstream, not a passthrough tunnel ---
+# nginx_lb terminates client TLS then re-encrypts outbound to each upstream
+# (proxy_pass https://, per the role's own header comment) — a plain
+# handshake check above can't distinguish that from a dumb TCP tunnel.
+# Hitting the LB's own health/root path over HTTPS and getting a real HTTP
+# response back proves the LB actually decrypted, proxied, and got a
+# response from upstream — end-to-end, not just "a TLS listener exists".
+
+- name: "TLS_VERIFY nginx_lb upstream proxy"
+  ansible.builtin.shell: |
+    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 https://127.0.0.1:443/ 2>&1)
+    if echo "$code" | grep -qE "^2[0-9]{2}$"; then
+      echo "TLS_RESULT:{\"product\":\"nginx_lb-proxy\",\"port\":443,\"status\":\"ok\",\"detail\":\"Upstream responded with HTTP $code via TLS-terminated, CA-verified proxy\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"nginx_lb-proxy\",\"port\":443,\"status\":\"failed\",\"detail\":\"Upstream did not respond successfully (HTTP $code) — with proxy_ssl_verify now on, this fires if the LB rejects the upstream's certificate, not just on a dead upstream\"}"
+    fi
+  register: nginx_lb_proxy_check
+  changed_when: false
+  # Was "failed_when: false" with a check that accepted ANY 3-digit HTTP
+  # code, including a 502 from nginx itself refusing the upstream's cert —
+  # meaning this could never actually distinguish "upstream trusted and
+  # reachable" from "TLS to upstream broken" or "upstream down". Now that
+  # proxy_ssl_verify is on (see lb-server.conf.j2), a bad/untrusted upstream
+  # cert genuinely produces a 502 here — this is the real, gating proof that
+  # cross-host trust to the upstream actually works, not decoration.
+  failed_when: "'\"status\":\"ok\"' not in nginx_lb_proxy_check.stdout"
+
+- name: "TLS_OUTPUT nginx_lb upstream proxy"
+  ansible.builtin.debug:
+    msg: "{{ nginx_lb_proxy_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"

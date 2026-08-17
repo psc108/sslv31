@@ -1,0 +1,129 @@
+---
+# Nginx role — install and configure as TLS reverse proxy.
+# Required vars: server_cert_pem, server_key_pem, ca_chain_pem
+# Optional vars: nginx_server_name, nginx_listen_port, nginx_upstream_servers
+# Product vars passed via product_vars dict are merged automatically.
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing Nginx installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y nginx nginx-common 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/nginx.conf
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Nginx installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    dnf remove -y nginx 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/nginx.conf
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Fresh install ---
+
+- name: Set nginx vars from product config
+  ansible.builtin.set_fact:
+    nginx_server_name: "{{ product_vars.nginx_server_name | default(service_role + '.internal') }}"
+    nginx_listen_port: "{{ product_vars.nginx_listen_port | default(443) }}"
+    nginx_upstream_servers: "{{ product_vars.nginx_upstream_servers | default([]) }}"
+    nginx_root: "{{ product_vars.nginx_root | default('/var/www/html') }}"
+    nginx_worker_connections: "{{ product_vars.nginx_worker_connections | default(1024) }}"
+  when: product_vars is defined
+
+- name: Install Nginx (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [nginx]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Nginx (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nginx]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Create Nginx SSL directory
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+# RHEL's nginx package has no sites-available/sites-enabled split (that's a
+# Debian packaging convention) — since nginx.conf below is fully
+# overwritten by this role either way, reusing the same convention on RHEL
+# (rather than switching to conf.d/*.conf) keeps "Deploy default server
+# block" identical across both OSes.
+- name: Create Nginx sites directories (RHEL)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/nginx/sites-available
+    - /etc/nginx/sites-enabled
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Deploy Nginx server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}\n{{ ca_chain_pem }}"
+    dest: /etc/nginx/ssl/server-fullchain.pem
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy Nginx private key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/nginx/ssl/server-key.pem
+    mode: "0600"
+  notify: reload nginx
+
+- name: Deploy Nginx configuration
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy default server block
+  ansible.builtin.template:
+    src: default-server.conf.j2
+    dest: /etc/nginx/sites-available/default
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable default server block
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/default
+    dest: /etc/nginx/sites-enabled/default
+    state: link
+  notify: reload nginx
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Enable and start Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.nginx_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.nginx_sudo_nopasswd | default(false) }}"
+  when: (product_vars.nginx_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.nginx_file_deployments }}"
+  when: (product_vars.nginx_file_deployments | default([])) | length > 0

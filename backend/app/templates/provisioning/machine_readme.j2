@@ -1,0 +1,106 @@
+# {{ role | capitalize }}{% if role == "ca" %} Certificate Authority{% endif %} — SSL Deployment Guide
+# Environment: {{ env_name }}
+
+## Files
+{% if role == "ca" %}
+| File | Purpose |
+|------|---------|
+| `ca.pem` | CA certificate (PEM format) — add to truststores |
+| `ca.der` | CA certificate (DER format) — for Windows/Java import |
+
+This CA was generated specifically for the **{{ env_name }}** environment.
+All certificates in this bundle are signed by this CA.
+
+To trust all services in this environment, add `ca.pem` to your truststore.
+{% elif role in ("backend", "frontend") %}
+| File | Purpose |
+|------|---------|
+| `certs/server-cert.pem` | Server TLS certificate |
+| `certs/server.key` | Server private key (encrypted, passphrase-protected) |
+| `certs/server.key.nopass` | Server private key (unencrypted) |
+| `certs/client-cert.pem` | Client certificate for outbound mTLS |
+| `certs/client.key` | Client private key (encrypted) |
+| `certs/client.key.nopass` | Client private key (unencrypted) |
+| `certs/ca.pem` | CA certificate |
+| `stores/server-keystore.p12` | PKCS#12 keystore (server identity) |
+| `stores/client-keystore.p12` | PKCS#12 keystore (client identity for mTLS) |
+| `stores/truststore.p12` | PKCS#12 truststore (CA cert) |
+| `config/application-ssl.yml.snippet` | Spring Boot SSL configuration |
+
+## Deployment
+
+1. Copy files to `{{ base_path }}/{{ role }}/` on the {{ role }} machine
+2. Set permissions: `chmod 600 certs/*.key* stores/*.p12`
+3. Update `application.yml` with values from `config/application-ssl.yml.snippet`
+4. Restart services
+
+## Keystore Password
+
+All keystores and truststores use the same password: configured via `javaSecurityPassword` in setup.properties.
+The encrypted form (`ENC(...)`) is used in Spring Boot configuration files.
+{% elif role == "mysql" %}
+| File | Purpose |
+|------|---------|
+| `certs/server-cert.pem` | MySQL server certificate |
+| `certs/server.key` | Server private key (encrypted) |
+| `certs/server.key.nopass` | Server private key (unencrypted — MySQL uses this) |
+| `certs/ca.pem` | CA certificate |
+| `stores/keystore.p12` | PKCS#12 keystore (if needed) |
+| `stores/truststore.p12` | PKCS#12 truststore |
+| `config/ssl.cnf.snippet` | MySQL SSL configuration |
+
+## Deployment
+
+1. Copy files to `{{ base_path }}/mysql/` on the MySQL machine
+2. Set permissions: `chmod 600 certs/*.key*; chown mysql:mysql certs/*`
+3. Add SSL config from `config/ssl.cnf.snippet` to `/etc/my.cnf` or `/etc/mysql/mysql.conf.d/ssl.cnf`
+4. Restart MySQL: `systemctl restart mysqld`
+5. Verify: `mysql -e "SHOW VARIABLES LIKE '%ssl%'"`
+{% elif role == "rabbitmq" %}
+| File | Purpose |
+|------|---------|
+| `certs/server-cert.pem` | RabbitMQ server certificate |
+| `certs/server.key` | Server private key (encrypted) |
+| `certs/server.key.nopass` | Server private key (unencrypted — RabbitMQ uses this) |
+| `certs/ca.pem` | CA certificate (for verifying client certs) |
+| `config/rabbitmq-ssl.conf.snippet` | RabbitMQ TLS configuration |
+
+## Deployment
+
+1. Copy files to `{{ base_path }}/rabbitmq/` on the RabbitMQ machine
+2. Set permissions: `chmod 600 certs/*.key*; chown rabbitmq:rabbitmq certs/*`
+3. Merge `config/rabbitmq-ssl.conf.snippet` into `/etc/rabbitmq/rabbitmq.conf`
+4. Restart RabbitMQ: `systemctl restart rabbitmq-server`
+5. Verify: `rabbitmq-diagnostics listeners` (should show port 5671)
+{% elif role == "keystone" %}
+| File | Purpose |
+|------|---------|
+| `certs/server-cert.pem` | Keystone server certificate |
+| `certs/server.key` | Server private key (encrypted) |
+| `certs/server.key.nopass` | Server private key (unencrypted — Apache uses this) |
+| `certs/ca.pem` | CA certificate |
+| `config/apache-ssl.conf.snippet` | Apache VirtualHost SSL configuration |
+
+## Deployment
+
+1. Copy files to `{{ base_path }}/keystone/` on the Keystone machine
+2. Set permissions: `chmod 600 certs/*.key*; chown apache:apache certs/*` (or `www-data`)
+3. Merge `config/apache-ssl.conf.snippet` into Keystone's Apache vhost config
+4. Enable SSL module: `a2enmod ssl`
+5. Restart Apache: `systemctl restart apache2` (or `httpd`)
+6. Verify: `curl -v https://{{ hosts.keystone.fqdn }}:5000/v3`
+{% endif %}
+
+## Certificate Details
+
+- **CA:** {{ env_name }} Internal CA
+- **Key Algorithm:** {{ key_algo }} {{ key_size }}
+- **Validity:** {{ cert_validity_days }} days
+- **Cipher Profile:** {{ cipher_profile }}
+{% if role in ("backend", "frontend") %}
+- **mTLS:** Enabled (server requires client certs, client presents cert to MySQL/RabbitMQ)
+{% elif role in ("mysql", "rabbitmq") %}
+- **mTLS:** Server side (verifies client certificates from backend/frontend)
+{% else %}
+- **mTLS:** Not configured (server TLS only)
+{% endif %}

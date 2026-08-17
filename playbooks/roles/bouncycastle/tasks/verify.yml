@@ -1,0 +1,23 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    bouncycastle_install_path: "{{ product_vars.bouncycastle_install_path | default('/opt/bouncycastle') }}"
+
+- name: Verify Bouncy Castle is installed
+  ansible.builtin.shell: |
+    if [ -f {{ bouncycastle_install_path }}/bcprov-jdk18on-1.79.jar ]; then
+      REGISTERED="false"
+      JAVA_SEC=$(find /usr/lib/jvm -name java.security -path '*/conf/security/*' | head -1)
+      if [ -n "$JAVA_SEC" ] && grep -q 'BouncyCastleProvider' "$JAVA_SEC" 2>/dev/null; then
+        REGISTERED="true"
+      fi
+      echo "{\"TLS_RESULT\": {\"service\": \"bouncycastle\", \"status\": \"ok\", \"path\": \"{{ bouncycastle_install_path }}\", \"jce_registered\": $REGISTERED}}"
+    else
+      echo "{\"TLS_RESULT\": {\"service\": \"bouncycastle\", \"status\": \"error\", \"error\": \"jars not found\"}}"
+    fi
+  register: verify_result
+  changed_when: false
+
+- name: Show verify result
+  ansible.builtin.debug:
+    msg: "{{ verify_result.stdout }}"

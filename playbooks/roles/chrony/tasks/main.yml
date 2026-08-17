@@ -1,0 +1,46 @@
+---
+- name: Purge existing chrony/ntp
+  apt:
+    name: [chrony, ntp, ntpdate, systemd-timesyncd]
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Install chrony
+  apt:
+    name: chrony
+    state: present
+    update_cache: yes
+
+- name: Configure chrony servers
+  copy:
+    dest: /etc/chrony/chrony.conf
+    content: |
+      {% for srv in chrony_ntp_servers | default([{'server': 'pool.ntp.org', 'options': 'iburst'}]) %}
+      server {{ srv.server }} {{ srv.options | default('iburst') }}
+      {% endfor %}
+      driftfile /var/lib/chrony/chrony.drift
+      makestep 1.0 3
+      rtcsync
+      {% if chrony_allow_networks | default('') %}
+      allow {{ chrony_allow_networks }}
+      {% endif %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and restart chrony
+  systemd:
+    name: chrony
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Verify time sync
+  command: chronyc tracking
+  register: chrony_status
+  changed_when: false
+
+- name: Show sync status
+  debug:
+    var: chrony_status.stdout_lines

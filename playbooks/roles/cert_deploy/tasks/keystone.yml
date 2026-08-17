@@ -1,0 +1,27 @@
+---
+- name: Deploy Keystone server certificate
+  ansible.builtin.copy:
+    content: "{{ _cert_pem }}"
+    dest: /etc/apache2/ssl/server.pem
+    mode: "0644"
+    owner: root
+    group: www-data
+  notify: restart apache2
+
+- name: Deploy Keystone server key
+  ansible.builtin.copy:
+    content: "{{ _key_pem }}"
+    dest: /etc/apache2/ssl/server-key.pem
+    mode: "0600"
+    owner: root
+    group: www-data
+  notify: restart apache2
+
+- name: Deploy Keystone CA chain
+  ansible.builtin.copy:
+    content: "{{ _ca_pem }}"
+    dest: /etc/apache2/ssl/ca.pem
+    mode: "0644"
+    owner: root
+    group: www-data
+  notify: restart apache2

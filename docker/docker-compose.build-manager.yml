@@ -1,0 +1,138 @@
+services:
+  certmanager:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ssl-cert-manager
+    ports:
+      - "80:80"
+      - "8000:8000"
+    volumes:
+      - certmanager-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DATA_DIR=/data
+      - BACKUP_DIR=/data/backups
+      - LOG_LEVEL=INFO
+    networks:
+      - bm-net
+    restart: unless-stopped
+    depends_on:
+      - target-frontend
+      - target-backend
+      - target-mysql
+      - target-rabbitmq
+      - target-keystone
+
+  target-frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.target
+    container_name: target-frontend
+    hostname: target-frontend
+    privileged: true
+    ports:
+      - "8443:443"
+      - "8080:80"
+    networks:
+      - bm-net
+    volumes:
+      - certmanager-data:/certmanager-data:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    restart: unless-stopped
+
+  target-backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.target
+    container_name: target-backend
+    hostname: target-backend
+    privileged: true
+    ports:
+      - "8001:8000"
+    networks:
+      - bm-net
+    volumes:
+      - certmanager-data:/certmanager-data:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    restart: unless-stopped
+
+  target-mysql:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.target
+    container_name: target-mysql
+    hostname: target-mysql
+    privileged: true
+    ports:
+      - "3306:3306"
+    networks:
+      - bm-net
+    volumes:
+      - certmanager-data:/certmanager-data:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    restart: unless-stopped
+
+  target-rabbitmq:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.target
+    container_name: target-rabbitmq
+    hostname: target-rabbitmq
+    privileged: true
+    ports:
+      - "5671:5671"
+      - "15671:15671"
+    networks:
+      - bm-net
+    volumes:
+      - certmanager-data:/certmanager-data:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    restart: unless-stopped
+
+  target-keystone:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.target
+    container_name: target-keystone
+    hostname: target-keystone
+    privileged: true
+    ports:
+      - "5000:5000"
+    networks:
+      - bm-net
+    volumes:
+      - certmanager-data:/certmanager-data:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    restart: unless-stopped
+
+networks:
+  bm-net:
+    # Externally managed: recreated manually with an explicit 192.168.90.0/24
+    # subnet (instead of Docker's default 172.16.0.0/12 pool) while chasing a
+    # container network-churn theory; that specific theory was later
+    # disproven (RestartCount pointed at per-host SSH/systemd settle time
+    # instead — see _wait_for_ssh_port_ready in container_manager.py), but
+    # the subnet migration itself was done by hand (docker network rm/create)
+    # rather than through compose, so compose must treat it as external or
+    # it refuses to manage a network it didn't create.
+    external: true
+    name: docker_bm-net
+
+volumes:
+  certmanager-data:

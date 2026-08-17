@@ -1,0 +1,16 @@
+---
+# cert-deploy.yml — deploy renewed TLS certificates to all hosts in an
+# environment without running the full site.yml provisioning playbook.
+# Submitted as a cert_renew job by the POST /environments/{id}/certs/renew
+# endpoint (Phase 3, step 3.9).
+#
+# Cert file paths are injected as hostvars by inventory_service.py (step 3.5):
+#   cert_crt, cert_key, cert_chain, ca_chain, truststore_jks
+
+- name: Deploy renewed TLS certificates
+  hosts: all
+  gather_facts: true
+  become: true
+
+  roles:
+    - cert_deploy

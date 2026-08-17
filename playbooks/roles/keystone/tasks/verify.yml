@@ -1,0 +1,108 @@
+---
+# Keystone TLS verify
+
+- name: "TLS_VERIFY keystone"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.keystone_port | default(5000) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"keystone\",\"port\":{{ product_vars.keystone_port | default(5000) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"keystone\",\"port\":{{ product_vars.keystone_port | default(5000) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: keystone_tls_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT keystone"
+  ansible.builtin.debug:
+    msg: "{{ keystone_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+
+# --- Cross-host trust checks ---
+# internal_ca_path is an Ansible FACT, set by the base role's own set_fact
+# task (playbooks/roles/base/tasks/main.yml) — that only exists within the
+# SAME playbook run that included the base role (site.yml). This verify.yml
+# is also run standalone (playbooks/verify.yml, no base role at all) as an
+# on-demand TLS check separate from a build — Ansible facts don't persist
+# across separate ansible-playbook invocations, so a bare {{ internal_ca_path
+# }} here would be undefined in that context (confirmed via a real run:
+# "Task failed... 'internal_ca_path' is undefined"). Recomputing it the same
+# way base does (branching on ansible_facts['os_family']) was tried next and
+# also failed — verify.yml's play sets gather_facts: false (every other
+# check here is a fast, self-contained openssl one-liner with no need for
+# it), so ansible_facts is empty at this point too (confirmed via a second
+# real run: "object of type 'dict' has no attribute 'os_family'"). Checking
+# which of the CA's possible deployed paths actually exists on disk sidesteps
+# needing gathered facts (or the base role having run in this same playbook
+# invocation) entirely — self-contained regardless of OS or gather_facts.
+- name: Compute internal CA path for cross-host checks
+  ansible.builtin.shell: |
+    ls /usr/local/share/ca-certificates/internal/internal-ca.crt \
+       /etc/pki/ca-trust/source/anchors/internal-ca.crt \
+       /usr/local/share/ca-certificates/internal-ca.crt \
+       /etc/ca-certificates/trust-source/anchors/internal-ca.crt \
+       2>/dev/null | head -1
+  register: keystone_verify_ca_path_result
+  changed_when: false
+
+- name: Set internal CA path fact
+  ansible.builtin.set_fact:
+    keystone_verify_ca_path: "{{ keystone_verify_ca_path_result.stdout | trim }}"
+
+# Every other TLS_VERIFY in this playbook set is a same-host loopback check
+# (openssl s_client -connect 127.0.0.1:...) — it proves a host serves a
+# valid cert, never that another host in the same environment actually
+# trusts it. These run FROM the keystone host TO another real host's real
+# address, validating against keystone_verify_ca_path (the same CA base deploys on
+# every host) — genuine proof that certs issued by this environment's CA
+# are trusted host-to-host, not just individually valid.
+
+- name: "TLS_VERIFY keystone->mysql cross-host trust"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect {{ product_vars.keystone_db_host }}:3306 -starttls mysql -CAfile {{ keystone_verify_ca_path }} 2>&1)
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    if echo "$verify" | grep -q "^0 "; then
+      echo "TLS_RESULT:{\"product\":\"keystone-to-mysql\",\"port\":3306,\"status\":\"ok\",\"detail\":\"MySQL's certificate validated against the shared internal CA from a peer host\",\"verify\":\"$verify\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"keystone-to-mysql\",\"port\":3306,\"status\":\"failed\",\"detail\":\"MySQL's certificate did NOT validate against the shared internal CA from a peer host\",\"verify\":\"$verify\"}"
+    fi
+  register: keystone_mysql_trust_check
+  changed_when: false
+  # This one genuinely gates (unlike every "failed_when: false" loopback
+  # check above) — Keystone's real DB connection depends on this actually
+  # working (see tasks/main.yml's keystone_db_connection), so a false "ok"
+  # here would be misleading, not just cosmetic.
+  failed_when: "'\"status\":\"ok\"' not in keystone_mysql_trust_check.stdout"
+  when: product_vars.keystone_db_host is defined
+
+- name: "TLS_OUTPUT keystone->mysql cross-host trust"
+  ansible.builtin.debug:
+    msg: "{{ keystone_mysql_trust_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.keystone_db_host is defined
+
+- name: "TLS_VERIFY keystone->rabbitmq cross-host trust"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect {{ product_vars.keystone_rabbitmq_host }}:5671 -CAfile {{ keystone_verify_ca_path }} 2>&1)
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    if echo "$result" | grep -q "CONNECTED" && echo "$verify" | grep -q "^0 "; then
+      echo "TLS_RESULT:{\"product\":\"keystone-to-rabbitmq\",\"port\":5671,\"status\":\"ok\",\"detail\":\"RabbitMQ's certificate validated against the shared internal CA from a peer host\",\"verify\":\"$verify\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"keystone-to-rabbitmq\",\"port\":5671,\"status\":\"failed\",\"detail\":\"RabbitMQ's certificate did NOT validate against the shared internal CA from a peer host\",\"verify\":\"$verify\"}"
+    fi
+  register: keystone_rabbitmq_trust_check
+  changed_when: false
+  # Advisory, not gating: unlike mysql, Keystone has no real functional
+  # dependency on RabbitMQ — this only runs (and only proves anything) when
+  # a template explicitly opts in by setting keystone_rabbitmq_host, purely
+  # to demonstrate the same CA/trust mechanism generalises across products.
+  failed_when: false
+  when: product_vars.keystone_rabbitmq_host is defined
+
+- name: "TLS_OUTPUT keystone->rabbitmq cross-host trust"
+  ansible.builtin.debug:
+    msg: "{{ keystone_rabbitmq_trust_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.keystone_rabbitmq_host is defined

@@ -1,0 +1,6 @@
+---
+# Uvicorn TLS verify — served behind Nginx, no direct TLS
+
+- name: "TLS_VERIFY uvicorn (skipped — behind reverse proxy)"
+  ansible.builtin.debug:
+    msg: "TLS_RESULT:{\"product\":\"uvicorn\",\"port\":8000,\"status\":\"ok\",\"detail\":\"No direct TLS — served behind Nginx reverse proxy\"}"

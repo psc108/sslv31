@@ -1,0 +1,282 @@
+---
+# RabbitMQ role — installs RabbitMQ with TLS on AMQP and management UI.
+# Purges any existing installation first to guarantee a clean state.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    rabbitmq_admin_password: "{{ product_vars.rabbitmq_admin_password | default('guest') }}"
+    rabbitmq_enable_management: "{{ product_vars.rabbitmq_enable_management | default(true) }}"
+    rabbitmq_vhost: "{{ product_vars.rabbitmq_vhost | default('/') }}"
+    rabbitmq_ssl_port: "{{ product_vars.rabbitmq_ssl_port | default(5671) }}"
+    rabbitmq_ssl_cacertfile: "{{ product_vars.rabbitmq_ssl_cacertfile | default('/etc/rabbitmq/ssl/ca.crt') }}"
+    rabbitmq_ssl_certfile: "{{ product_vars.rabbitmq_ssl_certfile | default('/etc/rabbitmq/ssl/server.crt') }}"
+    rabbitmq_ssl_keyfile: "{{ product_vars.rabbitmq_ssl_keyfile | default('/etc/rabbitmq/ssl/server.key') }}"
+    rabbitmq_ssl_version_1: "{{ product_vars.rabbitmq_ssl_version_1 | default('tlsv1.3') }}"
+    rabbitmq_ssl_version_2: "{{ product_vars.rabbitmq_ssl_version_2 | default('tlsv1.2') }}"
+    rabbitmq_ssl_verify: "{{ product_vars.rabbitmq_ssl_verify | default('verify_none') }}"
+    rabbitmq_ssl_fail_if_no_peer_cert: "{{ product_vars.rabbitmq_ssl_fail_if_no_peer_cert | default('false') }}"
+    rabbitmq_tcp_listener: "{{ product_vars.rabbitmq_tcp_listener | default('none') }}"
+    rabbitmq_management_ssl_port: "{{ product_vars.rabbitmq_management_ssl_port | default(15671) }}"
+    rabbitmq_heartbeat: "{{ product_vars.rabbitmq_heartbeat | default(580) }}"
+    rabbitmq_log_level: "{{ product_vars.rabbitmq_log_level | default('info') }}"
+    rabbitmq_loopback_users: "{{ product_vars.rabbitmq_loopback_users | default('none') }}"
+    rabbitmq_users: "{{ product_vars.rabbitmq_users | default([]) }}"
+    rabbitmq_bulk_users: "{{ product_vars.rabbitmq_bulk_users | default('') }}"
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing RabbitMQ installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop rabbitmq-server 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y rabbitmq-server erlang* 2>/dev/null || true
+    rm -rf /var/lib/rabbitmq /etc/rabbitmq /var/log/rabbitmq
+    rm -f /etc/apt/sources.list.d/rabbitmq*.list /etc/apt/sources.list.d/erlang*.list
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing RabbitMQ installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop rabbitmq-server 2>/dev/null || true
+    dnf remove -y rabbitmq-server 'erlang*' 2>/dev/null || true
+    rm -rf /var/lib/rabbitmq /etc/rabbitmq /var/log/rabbitmq
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Install Erlang + RabbitMQ from distro repos ---
+
+- name: Install RabbitMQ and Erlang (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [erlang-nox, rabbitmq-server]
+  when: ansible_facts.os_family == "Debian"
+
+# RHEL8's own repos (and EPEL) only carry Erlang 22, far too old for
+# RabbitMQ 3.13 (needs 26+) — confirmed via direct search. RabbitMQ.com's
+# own Cloudsmith-hosted repos are the documented way to get compatible
+# versions of both on RHEL; the .repo file content below is exactly what
+# their official install script (packagecloud.io/install/repositories/
+# rabbitmq/{erlang,rabbitmq-server}/script.rpm.sh) generates — written
+# directly here instead of shelling out to a third-party script live, for
+# the same reasons every other external-repo addition in this playbook set
+# avoids that (explicit, reviewable, no live script-fetch-and-exec).
+- name: Add RabbitMQ Erlang yum repo (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [rabbitmq_erlang]
+      name=rabbitmq_erlang
+      baseurl=https://packagecloud.io/rabbitmq/erlang/el/8/$basearch
+      repo_gpgcheck=1
+      gpgcheck=0
+      enabled=1
+      gpgkey=https://packagecloud.io/rabbitmq/erlang/gpgkey
+      sslverify=1
+      sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+      metadata_expire=300
+    dest: /etc/yum.repos.d/rabbitmq_erlang.repo
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Add RabbitMQ server yum repo (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [rabbitmq_rabbitmq-server]
+      name=rabbitmq_rabbitmq-server
+      baseurl=https://packagecloud.io/rabbitmq/rabbitmq-server/el/8/$basearch
+      repo_gpgcheck=1
+      gpgcheck=0
+      enabled=1
+      gpgkey=https://packagecloud.io/rabbitmq/rabbitmq-server/gpgkey
+      sslverify=1
+      sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+      metadata_expire=300
+    dest: /etc/yum.repos.d/rabbitmq_rabbitmq-server.repo
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install RabbitMQ and Erlang (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [erlang, rabbitmq-server]
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Deploy TLS certificates (no password on key) ---
+
+- name: Create RabbitMQ SSL directory
+  ansible.builtin.file:
+    path: /etc/rabbitmq/ssl
+    state: directory
+    mode: "0750"
+    owner: rabbitmq
+    group: rabbitmq
+
+- name: Deploy server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/rabbitmq/ssl/server.crt
+    mode: "0644"
+    owner: rabbitmq
+    group: rabbitmq
+
+- name: Deploy server key (no password)
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/rabbitmq/ssl/server.key
+    mode: "0600"
+    owner: rabbitmq
+    group: rabbitmq
+
+- name: Deploy server key nopass symlink
+  ansible.builtin.file:
+    src: /etc/rabbitmq/ssl/server.key
+    dest: /etc/rabbitmq/ssl/server.key.nopass
+    state: link
+    owner: rabbitmq
+    group: rabbitmq
+
+- name: Deploy CA certificate
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/rabbitmq/ssl/ca.crt
+    mode: "0644"
+    owner: rabbitmq
+    group: rabbitmq
+
+# --- Configure RabbitMQ ---
+
+- name: Deploy RabbitMQ configuration
+  ansible.builtin.template:
+    src: rabbitmq.conf.j2
+    dest: /etc/rabbitmq/rabbitmq.conf
+    mode: "0644"
+    owner: rabbitmq
+    group: rabbitmq
+
+- name: Deploy Erlang cookie
+  ansible.builtin.copy:
+    content: "RABBITMQ_ERLANG_COOKIE_VALUE"
+    dest: /var/lib/rabbitmq/.erlang.cookie
+    mode: "0400"
+    owner: rabbitmq
+    group: rabbitmq
+
+# --- Start service (restart to pick up new config/certs) ---
+
+- name: Enable and restart RabbitMQ
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for RabbitMQ to be ready
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      rabbitmqctl status >/dev/null 2>&1 && exit 0
+      sleep 2
+    done
+    exit 1
+  changed_when: false
+
+# --- Enable management plugin (if requested) ---
+
+- name: Enable management plugin
+  ansible.builtin.shell: rabbitmq-plugins enable rabbitmq_management
+  changed_when: true
+  when: rabbitmq_enable_management | bool
+
+# --- Restart after plugin enable to apply management config ---
+
+- name: Restart RabbitMQ after plugin enable
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: restarted
+  when: rabbitmq_enable_management | bool
+
+- name: Wait for RabbitMQ to be ready after restart
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      rabbitmqctl status >/dev/null 2>&1 && exit 0
+      sleep 2
+    done
+    exit 1
+  changed_when: false
+  when: rabbitmq_enable_management | bool
+
+# --- Create vhost (before user permissions so it exists) ---
+
+- name: Create vhost
+  ansible.builtin.shell: |
+    rabbitmqctl add_vhost '{{ rabbitmq_vhost }}' 2>/dev/null || true
+  changed_when: true
+  when: rabbitmq_vhost != '/'
+
+# --- Create admin user and remove guest ---
+
+- name: Create admin user
+  ansible.builtin.shell: |
+    rabbitmqctl add_user admin '{{ rabbitmq_admin_password }}' 2>/dev/null || rabbitmqctl change_password admin '{{ rabbitmq_admin_password }}'
+  no_log: true
+  changed_when: true
+
+- name: Set admin user tags
+  ansible.builtin.shell: rabbitmqctl set_user_tags admin administrator
+  changed_when: true
+
+- name: Set admin user permissions
+  ansible.builtin.shell: "rabbitmqctl set_permissions -p '{{ rabbitmq_vhost }}' admin '.*' '.*' '.*'"
+  changed_when: true
+
+- name: Delete guest user
+  ansible.builtin.shell: rabbitmqctl delete_user guest 2>/dev/null || true
+  changed_when: true
+
+# --- Create individual users ---
+
+- name: Create users
+  ansible.builtin.shell: |
+    rabbitmqctl add_user '{{ item.name }}' '{{ item.password }}' 2>/dev/null || rabbitmqctl change_password '{{ item.name }}' '{{ item.password }}'
+    rabbitmqctl set_user_tags '{{ item.name }}' {{ item.tags | default('') }}
+    rabbitmqctl set_permissions -p '{{ item.vhost | default(rabbitmq_vhost) }}' '{{ item.name }}' '{{ item.configure_priv | default(".*") }}' '{{ item.write_priv | default(".*") }}' '{{ item.read_priv | default(".*") }}'
+  loop: "{{ rabbitmq_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: true
+  no_log: true
+  when: rabbitmq_users | length > 0
+
+# --- Bulk user creation from tab-separated input ---
+# Format per line: username<tab>configure<tab>write<tab>read
+# All bulk users get the vhost password set to their username (override via individual users)
+
+- name: Create bulk users from permissions table
+  ansible.builtin.shell: |
+    echo '{{ rabbitmq_bulk_users }}' | while IFS=$'\t' read -r user configure write read; do
+      [ -z "$user" ] && continue
+      # Skip header line
+      [ "$user" = "user" ] && continue
+      # Trim whitespace
+      user=$(echo "$user" | xargs)
+      configure=$(echo "$configure" | xargs)
+      write=$(echo "$write" | xargs)
+      read_p=$(echo "$read" | xargs)
+      [ -z "$user" ] && continue
+      rabbitmqctl add_user "$user" "$user" 2>/dev/null || rabbitmqctl change_password "$user" "$user"
+      rabbitmqctl set_permissions -p '{{ rabbitmq_vhost }}' "$user" "${configure:-.*}" "${write:-.*}" "${read_p:-.*}"
+    done
+  changed_when: true
+  when: rabbitmq_bulk_users | length > 0
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.rabbitmq_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.rabbitmq_sudo_nopasswd | default(false) }}"
+  when: (product_vars.rabbitmq_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.rabbitmq_file_deployments }}"
+  when: (product_vars.rabbitmq_file_deployments | default([])) | length > 0

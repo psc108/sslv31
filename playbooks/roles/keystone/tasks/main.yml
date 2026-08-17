@@ -1,0 +1,591 @@
+---
+# Keystone role — installs OpenStack Keystone via pip venv with Apache mod_wsgi and TLS.
+# Purges any existing installation first to guarantee a clean state.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    keystone_port: "{{ product_vars.keystone_port | default(5000) }}"
+    keystone_admin_password: "{{ product_vars.keystone_admin_password | default('admin') }}"
+    keystone_region: "{{ product_vars.keystone_region | default('RegionOne') }}"
+    keystone_token_provider: "{{ product_vars.keystone_token_provider | default('fernet') }}"
+    keystone_public_endpoint: "{{ product_vars.keystone_public_endpoint | default('') }}"
+    keystone_extra_pip_packages: "{{ (product_vars.keystone_extra_pip_packages | default('')).split(',') | map('trim') | select | join(' ') }}"
+    keystone_import_params: "{{ product_vars.keystone_import_params | default('') }}"
+    # Apache's web-server group differs by distro (Debian: www-data, RHEL: apache) —
+    # /etc/apache2/ssl itself is this role's own path, not a distro convention,
+    # kept the same on both OSes for simplicity.
+    keystone_apache_group: "{{ 'www-data' if ansible_facts.os_family == 'Debian' else 'apache' }}"
+
+# Separate set_fact (not merged into the block above): keystone_db_connection
+# needs internal_ca_path, which is itself a fact from the base role — Jinja
+# evaluates every key in one set_fact task from the SAME pre-task variable
+# snapshot, so building this from keystone_db_host/user/password/name here
+# rather than accepting a raw opaque connection string keeps the actual
+# ssl_ca reference a single, direct substitution (not text embedded inside
+# another variable's already-resolved value, which Ansible does not
+# guarantee to re-template) — and lets product_vars stay plain strings/host
+# names matching every other role's config_schema convention, rather than
+# requiring whoever wires this up by hand to already know internal_ca_path's
+# deployed location themselves.
+#
+# mysql+pymysql's ssl_ca/ssl_verify_cert query params are the standard,
+# documented way to get SQLAlchemy+PyMySQL (which Keystone's oslo.db uses)
+# to verify the server certificate against a CA file — see
+# https://docs.sqlalchemy.org/en/20/dialects/mysql.html#ssl-connections.
+# A raw product_vars.keystone_db_connection override (e.g. a non-MySQL
+# backend) still wins if explicitly given, unchanged from before.
+- name: Compute Keystone DB connection string
+  ansible.builtin.set_fact:
+    keystone_db_connection: >-
+      {%- if product_vars.keystone_db_connection is defined -%}
+      {{ product_vars.keystone_db_connection }}
+      {%- elif product_vars.keystone_db_host is defined -%}
+      mysql+pymysql://{{ product_vars.keystone_db_user | default('keystone') }}:{{ product_vars.keystone_db_password | default('keystone') }}@{{ product_vars.keystone_db_host }}/{{ product_vars.keystone_db_name | default('keystone') }}?ssl_ca={{ internal_ca_path }}&ssl_verify_cert=true
+      {%- else -%}
+      sqlite:////var/lib/keystone/keystone.db
+      {%- endif -%}
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing Keystone installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop apache2 2>/dev/null || true
+    rm -rf /opt/keystone /etc/keystone /var/log/keystone
+    rm -f /etc/apache2/sites-enabled/wsgi-keystone.conf /etc/apache2/sites-available/wsgi-keystone.conf
+    rm -f /etc/apache2/mods-enabled/wsgi.* /etc/apache2/mods-available/wsgi.*
+    rm -f /usr/local/bin/openstack /usr/local/bin/keystone-manage
+    rm -f /root/admin-openrc.sh
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y libapache2-mod-wsgi-py3 2>/dev/null || true
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Keystone installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop httpd 2>/dev/null || true
+    rm -rf /opt/keystone /etc/keystone /var/log/keystone
+    rm -f /etc/httpd/conf.d/wsgi-keystone.conf /etc/httpd/conf.modules.d/00-wsgi.conf
+    rm -f /usr/local/bin/openstack /usr/local/bin/keystone-manage
+    rm -f /root/admin-openrc.sh
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Install Apache + build dependencies ---
+# Split into smaller batches (each wrapped with automatic dpkg-repair +
+# retry) rather than one big multi-package transaction: found via a real
+# live build that this Docker host's network can disrupt an apt/dpkg
+# process mid-transaction outside Ansible's control, and a smaller batch
+# means less work lost — and less exposure time — per disruption.
+
+- name: Install Apache (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [apache2, apache2-dev, curl]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Python toolchain (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [python3, python3-dev, python3-venv, python3-pip]
+    resilient_apt_update_cache: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install build dependencies (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [gcc, libffi-dev, libssl-dev, pkg-config]
+    resilient_apt_update_cache: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Apache (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [httpd, httpd-devel, mod_ssl, curl]
+  when: ansible_facts.os_family == "RedHat"
+
+# RHEL8's system python3 is 3.6, too old for Keystone itself (not just
+# Ansible's own modules — see inventory_service.py) — python3.11 is used
+# for the venv instead. No openssl-devel here: cryptography (a Keystone
+# dependency) installs from a prebuilt manylinux wheel that doesn't need
+# it, and pulling it in transitively drags in a krb5-devel dependency that
+# conflicts with the vault-sourced nfs-utils baked into this image (see
+# docker/Dockerfile.target-rhel8's comment on this — confirmed there's no
+# dnf-level way to have both) — mod-wsgi (the one Keystone dependency that
+# genuinely needs a system C toolchain, since it must compile against this
+# host's actual installed Apache headers) only needs httpd-devel/gcc, not
+# openssl-devel.
+- name: Install Python toolchain (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [python3.11, python3.11-devel, python3.11-pip]
+  when: ansible_facts.os_family == "RedHat"
+
+# annobin + redhat-rpm-config provide the "-specs=/usr/lib/rpm/redhat/
+# redhat-hardened-cc1" wrapper that python3.11's own sysconfig CFLAGS
+# reference — without them, compiling ANY C extension (found via mod-wsgi,
+# the one Keystone dependency that needs a real compile) fails outright
+# with "gcc: error: /usr/lib/rpm/redhat/redhat-hardened-cc1: No such file
+# or directory". Neither is pulled in by gcc/httpd-devel/python3.11-devel
+# on their own — a real live install confirmed the failure, then confirmed
+# these two packages (both in UBI8's own AppStream, no vault needed) fix it.
+- name: Install build dependencies (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [gcc, libffi-devel, pkgconf-pkg-config, annobin, redhat-rpm-config]
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Create keystone user ---
+
+- name: Create keystone system user
+  ansible.builtin.user:
+    name: keystone
+    system: true
+    shell: /usr/sbin/nologin
+    home: /var/lib/keystone
+    create_home: true
+
+# --- Create directories ---
+
+- name: Create Keystone directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: keystone
+    group: keystone
+    mode: "0755"
+  loop:
+    - /etc/keystone
+    - /var/log/keystone
+    - /opt/keystone
+
+# --- Create venv and install Keystone via pip ---
+
+- name: Create Keystone virtual environment (Debian)
+  ansible.builtin.shell: |
+    python3 -m venv /opt/keystone/venv
+    /opt/keystone/venv/bin/pip install --upgrade pip setuptools wheel
+  args:
+    creates: /opt/keystone/venv/bin/pip
+  when: ansible_facts.os_family == "Debian"
+
+- name: Create Keystone virtual environment (RHEL)
+  ansible.builtin.shell: |
+    python3.11 -m venv /opt/keystone/venv
+    /opt/keystone/venv/bin/pip install --upgrade pip setuptools wheel
+  args:
+    creates: /opt/keystone/venv/bin/pip
+  when: ansible_facts.os_family == "RedHat"
+
+# set -o pipefail matters here: without it, a `cmd | tail -20` pipeline's
+# exit code is tail's (near-always 0), not pip's — found via a real RHEL
+# run where mod-wsgi's build genuinely failed (missing annobin/
+# redhat-rpm-config, since fixed above) but Ansible reported "changed" with
+# no error at all, only surfacing as a later, harder-to-diagnose failure
+# ("src file does not exist") on the symlink task that assumed this step
+# had actually succeeded.
+- name: Install Keystone and dependencies in venv
+  ansible.builtin.shell: |
+    set -o pipefail
+    /opt/keystone/venv/bin/pip install \
+      keystone python-openstackclient pymysql cryptography \
+      mod-wsgi requests pyyaml 2>&1 | tail -20
+  args:
+    executable: /bin/bash
+    creates: /opt/keystone/venv/bin/keystone-manage
+  register: pip_install
+  changed_when: true
+
+- name: Install extra pip packages in Keystone venv
+  ansible.builtin.shell: |
+    set -o pipefail
+    /opt/keystone/venv/bin/pip install {{ keystone_extra_pip_packages }} 2>&1 | tail -20
+  args:
+    executable: /bin/bash
+  when: keystone_extra_pip_packages | length > 0
+  changed_when: true
+
+- name: Create WSGI script files
+  ansible.builtin.copy:
+    content: |
+      from keystone.server.wsgi import initialize_public_application
+      application = initialize_public_application()
+    dest: /opt/keystone/venv/bin/keystone-wsgi-public
+    mode: "0755"
+    owner: keystone
+    group: keystone
+
+- name: Symlink CLI tools to PATH
+  ansible.builtin.file:
+    src: "/opt/keystone/venv/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+  loop:
+    - openstack
+    - keystone-manage
+
+# --- Deploy TLS certificates ---
+
+- name: Create Apache SSL directory
+  ansible.builtin.file:
+    path: /etc/apache2/ssl
+    state: directory
+    mode: "0750"
+    owner: root
+    group: "{{ keystone_apache_group }}"
+
+- name: Deploy server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/apache2/ssl/server.pem
+    mode: "0644"
+    owner: root
+    group: "{{ keystone_apache_group }}"
+
+- name: Deploy server key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/apache2/ssl/server-key.pem
+    mode: "0600"
+    owner: root
+    group: "{{ keystone_apache_group }}"
+
+- name: Deploy CA chain
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/apache2/ssl/ca.pem
+    mode: "0644"
+    owner: root
+    group: "{{ keystone_apache_group }}"
+
+# --- Configure Keystone ---
+
+- name: Deploy keystone.conf
+  ansible.builtin.template:
+    src: keystone.conf.j2
+    dest: /etc/keystone/keystone.conf
+    mode: "0640"
+    owner: keystone
+    group: keystone
+
+# --- Database sync ---
+
+- name: Ensure keystone owns its data directory
+  ansible.builtin.file:
+    path: /var/lib/keystone
+    state: directory
+    owner: keystone
+    group: keystone
+    mode: "0755"
+
+- name: Sync Keystone database
+  ansible.builtin.shell: |
+    su -s /bin/bash keystone -c "/opt/keystone/venv/bin/keystone-manage --config-file /etc/keystone/keystone.conf db_sync" 2>&1
+  register: db_sync_result
+  changed_when: true
+  failed_when: db_sync_result.rc != 0
+
+- name: Show db_sync output on failure
+  ansible.builtin.debug:
+    var: db_sync_result.stdout_lines
+  when: db_sync_result.rc != 0
+
+# --- Fernet & credential setup ---
+
+- name: Create Fernet key directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: keystone
+    group: keystone
+    mode: "0700"
+  loop:
+    - /etc/keystone/fernet-keys
+    - /etc/keystone/credential-keys
+
+- name: Initialize Fernet key repository
+  ansible.builtin.shell: |
+    /opt/keystone/venv/bin/keystone-manage --config-file /etc/keystone/keystone.conf \
+      fernet_setup --keystone-user keystone --keystone-group keystone
+  changed_when: true
+
+- name: Initialize credential key repository
+  ansible.builtin.shell: |
+    /opt/keystone/venv/bin/keystone-manage --config-file /etc/keystone/keystone.conf \
+      credential_setup --keystone-user keystone --keystone-group keystone
+  changed_when: true
+
+# --- Bootstrap admin user ---
+
+- name: Compute public endpoint
+  ansible.builtin.set_fact:
+    # ansible_host (not inventory_hostname) — inventory_hostname is just the
+    # role-name label ansible groups hosts by ("keystone"), not necessarily
+    # anything else can actually reach; ansible_host is the real connectable
+    # address (e.g. "target-keystone" in the Docker lab), matching the SAN
+    # the server cert was actually issued for (see base_provisioner.py).
+    # Found via a real openstack CLI test: the registered catalog endpoint
+    # used inventory_hostname, so any call following the catalog past the
+    # initial token request failed to resolve.
+    keystone_endpoint: "{{ keystone_public_endpoint if keystone_public_endpoint else 'https://' + ansible_host + ':' + keystone_port | string }}"
+
+- name: Bootstrap Keystone
+  ansible.builtin.shell: |
+    /opt/keystone/venv/bin/keystone-manage --config-file /etc/keystone/keystone.conf bootstrap \
+      --bootstrap-password '{{ keystone_admin_password }}' \
+      --bootstrap-admin-url '{{ keystone_endpoint }}/v3/' \
+      --bootstrap-internal-url '{{ keystone_endpoint }}/v3/' \
+      --bootstrap-public-url '{{ keystone_endpoint }}/v3/' \
+      --bootstrap-region-id '{{ keystone_region }}'
+  no_log: true
+  changed_when: true
+
+# --- Configure Apache with mod_wsgi from venv ---
+
+- name: Find mod_wsgi.so in venv
+  ansible.builtin.shell: find /opt/keystone/venv -name 'mod_wsgi*.so' | head -1
+  register: mod_wsgi_so
+  changed_when: false
+
+- name: Deploy mod_wsgi load config (Debian)
+  ansible.builtin.copy:
+    content: |
+      LoadModule wsgi_module {{ mod_wsgi_so.stdout }}
+    dest: /etc/apache2/mods-available/wsgi.load
+    mode: "0644"
+  when: ansible_facts.os_family == "Debian"
+
+- name: Enable Apache modules (Debian)
+  ansible.builtin.shell: |
+    a2enmod ssl headers rewrite 2>/dev/null || true
+    ln -sf /etc/apache2/mods-available/wsgi.load /etc/apache2/mods-enabled/wsgi.load
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Disable default sites (Debian)
+  ansible.builtin.shell: |
+    a2dissite 000-default default-ssl 2>/dev/null || true
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+# RHEL's httpd has no sites-available/enabled or a2enmod/a2ensite split —
+# every *.conf dropped into conf.d/ (vhosts) or conf.modules.d/ (module
+# loads) is auto-loaded, so there's nothing to "enable" explicitly. mod_ssl
+# is a real installed package (loads itself via its own conf.modules.d
+# file); headers_module and rewrite_module are compiled into httpd core and
+# on by default via RHEL's stock conf.modules.d/00-base.conf.
+- name: Deploy mod_wsgi load config (RHEL)
+  ansible.builtin.copy:
+    content: |
+      LoadModule wsgi_module {{ mod_wsgi_so.stdout }}
+    dest: /etc/httpd/conf.modules.d/00-wsgi.conf
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Get Python version for venv path
+  ansible.builtin.shell: /opt/keystone/venv/bin/python -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+  register: py_version
+  changed_when: false
+
+- name: Deploy Keystone Apache vhost (Debian)
+  ansible.builtin.template:
+    src: wsgi-keystone.conf.j2
+    dest: /etc/apache2/sites-available/wsgi-keystone.conf
+    mode: "0644"
+  when: ansible_facts.os_family == "Debian"
+
+- name: Enable Keystone site (Debian)
+  ansible.builtin.shell: a2ensite wsgi-keystone
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Set ServerName in apache2.conf (Debian)
+  ansible.builtin.lineinfile:
+    path: /etc/apache2/apache2.conf
+    regexp: '^ServerName'
+    line: "ServerName {{ ansible_host }}"
+    insertafter: EOF
+  when: ansible_facts.os_family == "Debian"
+
+- name: Deploy Keystone Apache vhost (RHEL)
+  ansible.builtin.template:
+    src: wsgi-keystone.conf.j2
+    dest: /etc/httpd/conf.d/wsgi-keystone.conf
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Set ServerName in httpd.conf (RHEL)
+  ansible.builtin.lineinfile:
+    path: /etc/httpd/conf/httpd.conf
+    regexp: '^ServerName'
+    line: "ServerName {{ ansible_host }}"
+    insertafter: EOF
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Start Apache ---
+
+- name: Enable and restart Apache (Debian)
+  ansible.builtin.systemd:
+    name: apache2
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Enable and restart Apache (RHEL)
+  ansible.builtin.systemd:
+    name: httpd
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Wait for Keystone to respond (Debian)
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      if curl -sk https://127.0.0.1:{{ keystone_port }}/v3/ | grep -q version; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "Keystone not responding after 60s"
+    curl -sk https://127.0.0.1:{{ keystone_port }}/v3/ 2>&1 || true
+    journalctl -u apache2 --no-pager -n 20 2>&1 || true
+    exit 1
+  register: ks_wait
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Wait for Keystone to respond (RHEL)
+  ansible.builtin.shell: |
+    for i in $(seq 1 30); do
+      if curl -sk https://127.0.0.1:{{ keystone_port }}/v3/ | grep -q version; then
+        exit 0
+      fi
+      sleep 2
+    done
+    echo "Keystone not responding after 60s"
+    curl -sk https://127.0.0.1:{{ keystone_port }}/v3/ 2>&1 || true
+    journalctl -u httpd --no-pager -n 20 2>&1 || true
+    exit 1
+  register: ks_wait
+  changed_when: false
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Generate admin-openrc.sh ---
+
+- name: Deploy admin-openrc.sh
+  ansible.builtin.copy:
+    content: |
+      export OS_USERNAME=admin
+      export OS_PASSWORD={{ keystone_admin_password }}
+      export OS_PROJECT_NAME=admin
+      export OS_USER_DOMAIN_NAME=Default
+      export OS_PROJECT_DOMAIN_NAME=Default
+      export OS_AUTH_URL={{ keystone_endpoint }}/v3
+      export OS_IDENTITY_API_VERSION=3
+      export OS_CACERT=/etc/apache2/ssl/ca.pem
+      export no_proxy={{ ansible_host }},localhost,127.0.0.1
+    dest: /root/admin-openrc.sh
+    mode: "0600"
+  no_log: true
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.keystone_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.keystone_sudo_nopasswd | default(false) }}"
+  when: (product_vars.keystone_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.keystone_file_deployments }}"
+  when: (product_vars.keystone_file_deployments | default([])) | length > 0
+
+# --- Import roles/domains/users/groups (scripts/import_p3.py) ---
+# Must run after "Deploy custom files" above — that's how an operator gets
+# an import YAML onto the host at all (keystone_file_deployments, targeting
+# the well-known path below), so checking for it any earlier would always
+# find nothing. The script itself is always deployed (harmless without an
+# import file); only actually invoked if one is present. Runs with the
+# venv's own Python since that's where its dependencies (requests, pyyaml)
+# and network access to the freshly-bootstrapped local Keystone API both live.
+
+- name: Deploy Keystone import script
+  ansible.builtin.copy:
+    src: import_p3.py
+    dest: /opt/keystone/venv/bin/import_p3.py
+    mode: "0755"
+    owner: keystone
+    group: keystone
+
+# Also at the path the reference create_roles.sh/create_system_domain.sh
+# scripts expect (-c /etc/keystone/ca.crt) — those aren't run by this role,
+# but an operator running them by hand afterwards (e.g. against
+# /opt/keystone/venv's python3, sourcing admin-openrc.sh first) shouldn't
+# need to know this role's own cert layout to find a working CA file.
+- name: Deploy CA chain to /etc/keystone/ca.crt
+  ansible.builtin.copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/keystone/ca.crt
+    mode: "0644"
+    owner: keystone
+    group: keystone
+
+- name: Check for a Keystone import file
+  ansible.builtin.stat:
+    path: /opt/keystone/import.yml
+  register: keystone_import_file
+
+# The admin password is written to a root-only temp file rather than
+# interpolated into the shell command below. That keeps the password out of
+# the command line entirely, so "Run Keystone import" doesn't need
+# no_log: true — and it must not need it, because no_log also censors the
+# registered result for every *later* task that references it (including
+# "Show Keystone import output" and any failure diagnostics), which is
+# exactly what made a real import failure undebuggable here before.
+- name: Write Keystone admin password to a restricted temp file
+  ansible.builtin.copy:
+    content: "{{ keystone_admin_password }}"
+    dest: /run/keystone_import_pw
+    mode: "0600"
+    owner: root
+    group: root
+  no_log: true
+  when: keystone_import_file.stat.exists
+
+- name: Run Keystone import
+  block:
+    - name: Run Keystone import
+      ansible.builtin.shell: |
+        /opt/keystone/venv/bin/python /opt/keystone/venv/bin/import_p3.py \
+          -i /opt/keystone/import.yml \
+          -k '{{ keystone_endpoint }}/v3' \
+          -u admin \
+          -p "$(cat /run/keystone_import_pw)" \
+          -c /etc/apache2/ssl/ca.pem \
+          {% if keystone_import_params | length > 0 %}-e {{ keystone_import_params }}{% endif %}
+      register: keystone_import_result
+      # "Wait for Keystone to respond" above only proves the unauthenticated
+      # root endpoint is up — found via a real run that Apache's mod_wsgi
+      # worker pool can still 500 on the *first* authenticated write (e.g.
+      # role creation) moments after restart, succeeding on a bare retry
+      # seconds later with no other change. Same class of
+      # transient-after-restart failure resilient_apt_install.yml already
+      # retries around.
+      until: keystone_import_result.rc == 0
+      retries: 3
+      delay: 5
+      changed_when: true
+      when: keystone_import_file.stat.exists
+
+    - name: Show Keystone import output
+      ansible.builtin.debug:
+        var: keystone_import_result.stdout_lines
+      when: keystone_import_file.stat.exists
+  always:
+    - name: Remove Keystone admin password temp file
+      ansible.builtin.file:
+        path: /run/keystone_import_pw
+        state: absent

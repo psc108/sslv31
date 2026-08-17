@@ -1,0 +1,163 @@
+"""Keystone diagnostic questionnaire definition."""
+from __future__ import annotations
+
+
+def get_questionnaire() -> list[dict]:
+    return [
+        {
+            "id": "keystone.service_status",
+            "title": "Service Status",
+            "description": "Confirm Keystone is running and the token endpoint is reachable.",
+            "items": [
+                {
+                    "id": "keystone.param.keystone_host",
+                    "label": "Keystone hostname or IP",
+                    "context": "The hostname or IP address of the Keystone server (e.g. 'keystone.example.com' or '10.0.0.5'). Used to build the curl and openssl commands.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.service_status",
+                    "label": "Keystone / Apache service status",
+                    "context": "Keystone typically runs under Apache (apache2 or httpd). Tries all three service names.",
+                    "command": "systemctl status openstack-keystone --no-pager -l 2>/dev/null || systemctl status apache2 --no-pager -l 2>/dev/null || systemctl status httpd --no-pager -l 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.version",
+                    "label": "Keystone / OpenStack client version",
+                    "context": "Version string for compatibility checks.",
+                    "command": "keystone --version 2>/dev/null || openstack --version 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.error_log",
+                    "label": "Keystone error log (last 100 lines)",
+                    "context": "The primary source of authentication errors, token failures, and SSL problems.",
+                    "command": "tail -n 100 /var/log/keystone/keystone.log 2>/dev/null || journalctl -u apache2 -n 100 --no-pager 2>/dev/null || journalctl -u httpd -n 100 --no-pager 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.port_check",
+                    "label": "Token endpoint HTTP status",
+                    "context": "A 200 or 300-series response confirms the endpoint is reachable. Any other code indicates a problem.",
+                    "command": 'curl -s -o /dev/null -w "%{http_code}" https://<keystone_host>:5000/v3 2>/dev/null',
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.firewall",
+                    "label": "Firewall rules for port 5000",
+                    "context": "Confirms the firewall is not blocking connections to the Keystone token endpoint.",
+                    "command": "firewall-cmd --list-all 2>/dev/null || iptables -L -n 2>/dev/null | grep 5000",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "id": "keystone.ssl",
+            "title": "SSL / TLS",
+            "description": "Confirm the Keystone endpoint is presenting a valid certificate.",
+            "items": [
+                {
+                    "id": "keystone.live_cert",
+                    "label": "Live certificate from endpoint",
+                    "context": "Connects to the Keystone endpoint and shows the certificate subject, issuer, expiry, and SANs.",
+                    "command": "openssl s_client -connect <keystone_host>:5000 -showcerts </dev/null 2>&1 | openssl x509 -noout -text 2>/dev/null | grep -E 'Subject:|Issuer:|Not Before:|Not After:|DNS:'",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.cert_chain",
+                    "label": "Full certificate chain",
+                    "context": "Shows the full chain presented by the server. Useful for diagnosing PKIX path building failures.",
+                    "command": "openssl s_client -connect <keystone_host>:5000 -showcerts </dev/null 2>&1",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "id": "keystone.account",
+            "title": "Service Account",
+            "description": "Confirm the service account exists, is enabled, and has the required role.",
+            "items": [
+                {
+                    "id": "keystone.param.service_user",
+                    "label": "Service account username",
+                    "context": "The OpenStack username the application authenticates with (e.g. 'ecs_service'). Used to build the user show and role assignment commands.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.param.project",
+                    "label": "Project / tenant name",
+                    "context": "The OpenStack project the service account belongs to (e.g. 'ecs' or 'admin'). Used to build the role assignment command.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.user_show",
+                    "label": "Service account details",
+                    "context": "Confirms the account exists and shows whether it is enabled.",
+                    "command": "openstack user show <service_user> 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.role_assignments",
+                    "label": "Service account role assignments",
+                    "context": "Lists the roles assigned to the service account on the project. An empty result means the account cannot authenticate.",
+                    "command": "openstack role assignment list --user <service_user> --project <project> 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.project_show",
+                    "label": "Project / tenant details",
+                    "context": "Confirms the project exists and is enabled.",
+                    "command": "openstack project show <project> 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "id": "keystone.catalogue",
+            "title": "Endpoint Catalogue & Token",
+            "description": "Confirm the identity endpoint is registered correctly and tokens can be issued.",
+            "items": [
+                {
+                    "id": "keystone.endpoint_list",
+                    "label": "Identity endpoint catalogue",
+                    "context": "Lists the registered identity endpoints. The URL must be reachable from the application host — localhost-bound URLs will not work for remote clients.",
+                    "command": "openstack endpoint list --service identity 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "keystone.token_issue",
+                    "label": "Token issuance test",
+                    "context": "Attempts to issue a token using the current OpenStack credentials. A successful result confirms the token endpoint is fully functional.",
+                    "command": "openstack token issue 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+                {
+                    "id": "keystone.fernet_keys",
+                    "label": "Fernet key directory",
+                    "context": "Fernet keys must exist for token issuance to work. Stale or missing keys cause token failures.",
+                    "command": "ls -la /etc/keystone/fernet-keys/ 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+    ]

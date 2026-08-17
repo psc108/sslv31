@@ -1,0 +1,27 @@
+[Unit]
+Description=Certificate Manager API (Gunicorn/Uvicorn)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+User=certmgr
+Group=certmgr
+WorkingDirectory=/opt/certmanager
+EnvironmentFile=/etc/certmanager/certmanager.env
+ExecStart=/opt/certmanager/venv/bin/gunicorn \
+    -k uvicorn.workers.UvicornWorker \
+    -w 2 \
+    --bind unix:/run/certmanager/certmanager.sock \
+    --timeout 600 \
+    app.main:app
+ExecReload=/bin/kill -HUP $MAINPID
+RuntimeDirectory=certmanager
+RuntimeDirectoryMode=0750
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/certmanager/app.log
+StandardError=append:/var/log/certmanager/app.log
+
+[Install]
+WantedBy=multi-user.target

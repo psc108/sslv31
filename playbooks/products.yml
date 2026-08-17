@@ -1,0 +1,31 @@
+---
+# Product deployment — runs product-specific Ansible roles per host.
+# Each host gets its products from extra_vars (set by the provisioner).
+# Variable format: host_products = {"role_name": [{"ansible_role": "nginx", "vars": {...}}, ...]}
+
+- name: Deploy products
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Configure local package cache
+      ansible.builtin.include_role:
+        name: local_repo
+
+    - name: Get product list for this host
+      ansible.builtin.set_fact:
+        my_products: "{{ host_products[service_role] | default([]) }}"
+
+    # loop_var renamed from the default "item" — see site.yml's identical
+    # comment on its own product loop for why.
+    - name: Include product roles
+      ansible.builtin.include_role:
+        name: "{{ bm_product.ansible_role }}"
+      vars:
+        product_vars: "{{ bm_product.vars | default({}) }}"
+      loop: "{{ my_products }}"
+      loop_control:
+        loop_var: bm_product
+        label: "{{ bm_product.ansible_role }}"
+      when: my_products | length > 0

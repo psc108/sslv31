@@ -1,0 +1,123 @@
+---
+# nginx_lb role — TLS-terminating, multi-service reverse-proxy load balancer.
+# Used as both frontend-lb and backend-lb in the Full Stack golden-path
+# template, with a different lb_upstreams list per host — modeled directly
+# on the real application's own frontend-lb/backend-lb nginx configs
+# (captured via the JAR Analyser, jar_type "nginx_installer"): both terminate
+# client-facing TLS with their own cert, then re-encrypt outbound
+# (proxy_pass https://, not http://) to each named upstream service, rather
+# than a passthrough tunnel.
+# Required vars: server_cert_pem, server_key_pem, ca_chain_pem
+# Optional vars: nginx_lb_upstreams (list of {name, path, host, port})
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing Nginx installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y nginx nginx-common 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/nginx.conf
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Nginx installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop nginx 2>/dev/null || true
+    dnf remove -y nginx 2>/dev/null || true
+    rm -rf /etc/nginx/ssl /etc/nginx/sites-enabled /etc/nginx/sites-available /etc/nginx/nginx.conf
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Fresh install ---
+
+- name: Set nginx_lb vars from product config
+  ansible.builtin.set_fact:
+    nginx_lb_upstreams: "{{ product_vars.lb_upstreams | default([]) }}"
+  when: product_vars is defined
+
+- name: Install Nginx (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [nginx]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Nginx (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nginx]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Create Nginx SSL directory
+  ansible.builtin.file:
+    path: /etc/nginx/ssl
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+# RHEL's nginx package has no sites-available/sites-enabled split — see the
+# equivalent comment in the nginx role for why this reuses that convention
+# on RHEL too rather than switching to conf.d/*.conf.
+- name: Create Nginx sites directories (RHEL)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/nginx/sites-available
+    - /etc/nginx/sites-enabled
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Deploy Nginx server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}\n{{ ca_chain_pem }}"
+    dest: /etc/nginx/ssl/server-fullchain.pem
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy Nginx private key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/nginx/ssl/server-key.pem
+    mode: "0600"
+  notify: reload nginx
+
+- name: Deploy Nginx configuration
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy LB server block
+  ansible.builtin.template:
+    src: lb-server.conf.j2
+    dest: /etc/nginx/sites-available/default
+    mode: "0644"
+  notify: reload nginx
+
+- name: Enable default server block
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/default
+    dest: /etc/nginx/sites-enabled/default
+    state: link
+  notify: reload nginx
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Enable and start Nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.nginx_lb_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.nginx_lb_sudo_nopasswd | default(false) }}"
+  when: (product_vars.nginx_lb_sudo_users | default('')) | length > 0

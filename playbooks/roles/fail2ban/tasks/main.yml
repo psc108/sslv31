@@ -1,0 +1,60 @@
+---
+- name: Purge existing fail2ban
+  apt:
+    name: fail2ban
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Install fail2ban
+  apt:
+    name: fail2ban
+    state: present
+    update_cache: yes
+
+- name: Configure fail2ban defaults
+  copy:
+    dest: /etc/fail2ban/jail.local
+    content: |
+      [DEFAULT]
+      bantime = {{ fail2ban_bantime | default('1h') }}
+      findtime = {{ fail2ban_findtime | default('10m') }}
+      maxretry = {{ fail2ban_maxretry | default(5) }}
+      backend = systemd
+
+      {% for jail in fail2ban_jails | default([{'name': 'sshd', 'enabled': true, 'port': 'ssh'}]) %}
+      [{{ jail.name }}]
+      enabled = {{ jail.enabled | default(true) | lower }}
+      port = {{ jail.port | default(jail.name) }}
+      {% if jail.filter | default('') %}
+      filter = {{ jail.filter }}
+      {% endif %}
+      {% if jail.maxretry | default('') %}
+      maxretry = {{ jail.maxretry }}
+      {% endif %}
+      {% if jail.bantime | default('') %}
+      bantime = {{ jail.bantime }}
+      {% endif %}
+
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and restart fail2ban
+  systemd:
+    name: fail2ban
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Show fail2ban status
+  command: fail2ban-client status
+  register: f2b_status
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display fail2ban status
+  debug:
+    var: f2b_status.stdout_lines
+  when: f2b_status.rc == 0

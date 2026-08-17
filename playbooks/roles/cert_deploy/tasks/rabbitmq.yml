@@ -1,0 +1,27 @@
+---
+- name: Deploy RabbitMQ server certificate
+  ansible.builtin.copy:
+    content: "{{ _cert_pem }}"
+    dest: /etc/rabbitmq/ssl/server.crt
+    mode: "0644"
+    owner: rabbitmq
+    group: rabbitmq
+  notify: restart rabbitmq
+
+- name: Deploy RabbitMQ server key
+  ansible.builtin.copy:
+    content: "{{ _key_pem }}"
+    dest: /etc/rabbitmq/ssl/server.key
+    mode: "0600"
+    owner: rabbitmq
+    group: rabbitmq
+  notify: restart rabbitmq
+
+- name: Deploy RabbitMQ CA certificate
+  ansible.builtin.copy:
+    content: "{{ _ca_pem }}"
+    dest: /etc/rabbitmq/ssl/ca.crt
+    mode: "0644"
+    owner: rabbitmq
+    group: rabbitmq
+  notify: restart rabbitmq

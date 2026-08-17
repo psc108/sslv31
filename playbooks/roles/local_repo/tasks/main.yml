@@ -1,0 +1,133 @@
+---
+# local_repo role — configures the target to use a local package cache as a
+# package source, eliminating (or reducing) network downloads during
+# provisioning.
+#
+# cache_base_dir defaults to the certmanager-data shared volume (read-only,
+# bind-mounted into every target container) but is configurable via
+# product_vars.local_repo_cache_dir — e.g. pointed at an NFS-mounted
+# directory instead, for templates that seed their own package cache on an
+# NFS server host rather than relying on the shared volume.
+#
+# Cache layout under cache_base_dir:
+#   apt/        — .deb files + Packages.gz  (Debian/Ubuntu)
+#   rpm/        — .rpm files + repodata/    (RHEL/CentOS)
+#   apk/        — .apk files + APKINDEX     (Alpine)
+#   bin/        — Node.js, Go tarballs (all OS)
+#
+# Falls back gracefully if the cache is absent — network provisioning still works.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    cache_base_dir: "{{ product_vars.local_repo_cache_dir | default('/certmanager-data/pkg-cache') }}"
+
+# ============================================================
+# Debian / Ubuntu
+# ============================================================
+
+- name: Check apt cache exists
+  ansible.builtin.stat:
+    path: "{{ cache_base_dir }}/apt/Packages.gz"
+  register: apt_cache_stat
+  when: ansible_facts.os_family == "Debian"
+
+- name: Configure local apt repository
+  when: ansible_facts.os_family == "Debian" and apt_cache_stat.stat.exists
+  block:
+    - name: Add local cache as apt source (highest priority)
+      ansible.builtin.copy:
+        content: "deb [trusted=yes] file://{{ cache_base_dir }}/apt ./\n"
+        dest: /etc/apt/sources.list.d/local-cache.list
+        mode: "0644"
+
+    - name: Pin local cache at priority 1001 (overrides all remote sources)
+      ansible.builtin.copy:
+        content: |
+          Package: *
+          Pin: origin ""
+          Pin-Priority: 1001
+        dest: /etc/apt/preferences.d/local-cache
+        mode: "0644"
+
+    - name: Update apt cache (local only — fast)
+      ansible.builtin.apt:
+        update_cache: true
+      changed_when: false
+
+- name: Report apt cache status
+  ansible.builtin.debug:
+    msg: "{{ 'Local apt cache active (' + cache_base_dir + '/apt) — offline provisioning enabled' if (apt_cache_stat.stat.exists | default(false)) else 'WARNING: No apt cache at ' + cache_base_dir + '/apt/ — falling back to network' }}"
+  when: ansible_facts.os_family == "Debian"
+
+# ============================================================
+# RHEL / CentOS / AlmaLinux / Rocky
+# ============================================================
+
+- name: Check rpm cache exists
+  ansible.builtin.stat:
+    path: "{{ cache_base_dir }}/rpm/repodata/repomd.xml"
+  register: rpm_cache_stat
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Configure local dnf repository
+  when: ansible_facts.os_family == "RedHat" and rpm_cache_stat.stat.exists
+  block:
+    - name: Add local cache as dnf repo (highest priority)
+      ansible.builtin.copy:
+        content: |
+          [local-cache]
+          name=Local Package Cache
+          baseurl=file://{{ cache_base_dir }}/rpm
+          enabled=1
+          gpgcheck=0
+          priority=1
+        dest: /etc/yum.repos.d/local-cache.repo
+        mode: "0644"
+
+    - name: Clean dnf metadata to pick up local repo
+      ansible.builtin.command: dnf clean metadata
+      changed_when: false
+
+- name: Report rpm cache status
+  ansible.builtin.debug:
+    msg: "{{ 'Local rpm cache active (' + cache_base_dir + '/rpm) — offline provisioning enabled' if (rpm_cache_stat.stat.exists | default(false)) else 'WARNING: No rpm cache at ' + cache_base_dir + '/rpm/ — falling back to network' }}"
+  when: ansible_facts.os_family == "RedHat"
+
+# ============================================================
+# Alpine
+# ============================================================
+
+- name: Check apk cache exists
+  ansible.builtin.stat:
+    path: "{{ cache_base_dir }}/apk/APKINDEX.tar.gz"
+  register: apk_cache_stat
+  when: ansible_facts.os_family == "Alpine"
+
+- name: Configure local apk repository
+  when: ansible_facts.os_family == "Alpine" and apk_cache_stat.stat.exists
+  block:
+    - name: Add local cache as apk repository
+      ansible.builtin.lineinfile:
+        path: /etc/apk/repositories
+        line: "{{ cache_base_dir }}/apk"
+        insertbefore: BOF
+        state: present
+
+    - name: Update apk index (local only)
+      ansible.builtin.command: apk update --no-network
+      changed_when: false
+      ignore_errors: true
+
+- name: Report apk cache status
+  ansible.builtin.debug:
+    msg: "{{ 'Local apk cache active (' + cache_base_dir + '/apk) — offline provisioning enabled' if (apk_cache_stat.stat.exists | default(false)) else 'WARNING: No apk cache at ' + cache_base_dir + '/apk/ — falling back to network' }}"
+  when: ansible_facts.os_family == "Alpine"
+
+# ============================================================
+# Arch Linux
+# ============================================================
+
+- name: Report Arch cache status (not yet supported)
+  ansible.builtin.debug:
+    msg: "WARNING: Arch Linux package cache not yet supported — builds will use network (pacman)"
+  when: ansible_facts.os_family == "Archlinux"

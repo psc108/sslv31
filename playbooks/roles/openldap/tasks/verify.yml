@@ -1,0 +1,48 @@
+---
+# Verify OpenLDAP TLS is working — both the dedicated LDAPS listener (636)
+# and StartTLS on the plain LDAP port (389), since both are enabled together.
+
+- name: "TLS_VERIFY openldap-ldaps"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:636 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"openldap-ldaps\",\"port\":636,\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"openldap-ldaps\",\"port\":636,\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: openldap_ldaps_check
+  changed_when: false
+  failed_when: false
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: "TLS_OUTPUT openldap-ldaps"
+  ansible.builtin.debug:
+    msg: "{{ openldap_ldaps_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: "TLS_VERIFY openldap-starttls"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:389 -starttls ldap 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"openldap-starttls\",\"port\":389,\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"verify\":\"$verify\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"openldap-starttls\",\"port\":389,\"status\":\"failed\",\"error\":\"StartTLS negotiation failed\"}"
+    fi
+  register: openldap_starttls_check
+  changed_when: false
+  failed_when: false
+  when: product_vars.ldap_tls_enabled | default(true) | bool
+
+- name: "TLS_OUTPUT openldap-starttls"
+  ansible.builtin.debug:
+    msg: "{{ openldap_starttls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.ldap_tls_enabled | default(true) | bool

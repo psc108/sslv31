@@ -1,0 +1,42 @@
+---
+# TLS Verification — connects to each product's TLS port and validates the certificate.
+# Outputs structured JSON results for the UI to parse.
+
+- name: Verify TLS deployment
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Get product list for this host
+      ansible.builtin.set_fact:
+        my_products: "{{ host_products[service_role] | default([]) }}"
+
+    # Not every product has verification logic (e.g. nfs_client, local_repo,
+    # nginx_lb, pkg_cache_seed, nfs_server never had a tasks/verify.yml
+    # written) — include_tasks failing to even locate the file turned out to
+    # be a harder failure than ignore_errors: true (below) actually catches,
+    # so it wasn't just skipping that one product: it silently aborted the
+    # rest of this host's task list entirely, before ever reaching a product
+    # that *does* have verify.yml. Every golden-path host uses nfs_client
+    # and local_repo, so this was failing TLS Verify for the whole
+    # environment, every time, with nothing but a job marked "failed" and no
+    # TLS_RESULT output at all to show for it. Checking the file actually
+    # exists (on the controller, via fileglob) before attempting the include
+    # avoids the failure outright rather than trying to recover from it.
+    # loop_var renamed from the default "item" — see site.yml's identical
+    # comment on its own product loop for why: any verify.yml this reaches
+    # that loops with the default "item" name would otherwise collide with
+    # this one.
+    - name: Include product verify tasks
+      ansible.builtin.include_tasks: "roles/{{ bm_product.ansible_role }}/tasks/verify.yml"
+      vars:
+        product_vars: "{{ bm_product.vars | default({}) }}"
+      loop: "{{ my_products }}"
+      loop_control:
+        loop_var: bm_product
+        label: "{{ bm_product.ansible_role }}"
+      when: >
+        my_products | length > 0 and
+        (lookup('fileglob', playbook_dir + '/roles/' + bm_product.ansible_role + '/tasks/verify.yml')) | length > 0
+      ignore_errors: true

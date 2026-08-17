@@ -1,0 +1,21 @@
+Listen {{ apache_listen_port }}
+
+# Redirect HTTP to HTTPS
+<VirtualHost *:80>
+    ServerName {{ apache_server_name }}
+    Redirect permanent / https://{{ apache_server_name }}/
+</VirtualHost>
+
+# HTTPS server
+<VirtualHost *:{{ apache_listen_port }}>
+    ServerName {{ apache_server_name }}
+
+    SSLEngine on
+    SSLCertificateFile {{ apache_ssl_dir }}/server-fullchain.pem
+    SSLCertificateKeyFile {{ apache_ssl_dir }}/server-key.pem
+
+    DocumentRoot {{ apache_document_root }}
+    <Directory "{{ apache_document_root }}">
+        Require all granted
+    </Directory>
+</VirtualHost>

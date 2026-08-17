@@ -1,0 +1,44 @@
+---
+- name: Install ufw
+  apt:
+    name: ufw
+    state: present
+    update_cache: yes
+
+- name: Reset ufw to defaults
+  command: ufw --force reset
+  changed_when: true
+
+- name: Set default incoming policy
+  command: "ufw default {{ ufw_default_incoming | default('deny') }} incoming"
+  changed_when: true
+
+- name: Set default outgoing policy
+  command: "ufw default {{ ufw_default_outgoing | default('allow') }} outgoing"
+  changed_when: true
+
+- name: Apply firewall rules
+  command: >
+    ufw {{ item.action | default('allow') }}
+    {% if item.from | default('any') != 'any' %}from {{ item.from }}{% endif %}
+    to any port {{ item.port }}
+    proto {{ item.proto | default('tcp') }}
+  loop: "{{ ufw_rules | default([]) }}"
+  changed_when: true
+
+- name: Always allow SSH (safety)
+  command: ufw allow 22/tcp
+  changed_when: true
+
+- name: Enable ufw
+  command: ufw --force enable
+  changed_when: true
+
+- name: Show ufw status
+  command: ufw status verbose
+  register: ufw_status
+  changed_when: false
+
+- name: Display firewall status
+  debug:
+    var: ufw_status.stdout_lines

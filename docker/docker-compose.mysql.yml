@@ -1,0 +1,54 @@
+# MySQL deployment profile
+# Usage: docker compose -f docker-compose.mysql.yml up -d
+#
+# First run creates the database and runs migrations automatically.
+# Data persists in the certmanager-mysqldata volume — this is a legitimate
+# standalone deployment option (self-hosted MySQL), not just a disposable
+# test harness. For AWS RDS/Aurora MySQL instead, skip this file and set
+# DATABASE_URL directly to point at the remote endpoint.
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: ssl-cert-manager-db
+    environment:
+      MYSQL_DATABASE: certmanager
+      MYSQL_USER: certmanager
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-certmanager_secret}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-certmanager_root_secret}
+    volumes:
+      - certmanager-mysqldata:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  certmanager:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ssl-cert-manager
+    ports:
+      - "80:80"
+      - "8000:8000"
+    volumes:
+      - certmanager-data:/data
+    environment:
+      - DATA_DIR=/data
+      - BACKUP_DIR=/data/backups
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=mysql+aiomysql://certmanager:${MYSQL_PASSWORD:-certmanager_secret}@mysql:3306/certmanager
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=10
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  certmanager-data:
+  certmanager-mysqldata:

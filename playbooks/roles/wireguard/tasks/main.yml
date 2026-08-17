@@ -1,0 +1,105 @@
+---
+- name: Purge existing wireguard
+  apt:
+    name: wireguard
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Remove existing config
+  file:
+    path: /etc/wireguard/wg0.conf
+    state: absent
+
+- name: Install wireguard
+  apt:
+    name: [wireguard, wireguard-tools]
+    state: present
+    update_cache: yes
+
+- name: Generate server private key
+  command: wg genkey
+  register: wg_privkey
+  changed_when: true
+  args:
+    creates: /etc/wireguard/private.key
+
+- name: Save private key
+  copy:
+    content: "{{ wg_privkey.stdout }}"
+    dest: /etc/wireguard/private.key
+    owner: root
+    group: root
+    mode: "0600"
+  when: wg_privkey.changed
+
+- name: Read private key
+  slurp:
+    src: /etc/wireguard/private.key
+  register: wg_privkey_file
+
+- name: Generate public key
+  shell: echo "{{ wg_privkey_file.content | b64decode | trim }}" | wg pubkey
+  register: wg_pubkey
+  changed_when: false
+
+- name: Save public key
+  copy:
+    content: "{{ wg_pubkey.stdout }}"
+    dest: /etc/wireguard/public.key
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure wg0 interface
+  copy:
+    dest: /etc/wireguard/wg0.conf
+    content: |
+      [Interface]
+      Address = {{ wireguard_address }}
+      ListenPort = {{ wireguard_listen_port | default(51820) }}
+      PrivateKey = {{ wg_privkey_file.content | b64decode | trim }}
+      {% if wireguard_post_up | default('') %}
+      PostUp = {{ wireguard_post_up }}
+      {% endif %}
+      {% if wireguard_post_down | default('') %}
+      PostDown = {{ wireguard_post_down }}
+      {% endif %}
+
+      {% for peer in wireguard_peers | default([]) %}
+      # {{ peer.name | default('peer') }}
+      [Peer]
+      PublicKey = {{ peer.public_key }}
+      AllowedIPs = {{ peer.allowed_ips }}
+      {% if peer.endpoint | default('') %}
+      Endpoint = {{ peer.endpoint }}
+      {% endif %}
+
+      {% endfor %}
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: yes
+    reload: yes
+
+- name: Enable and start wg0
+  systemd:
+    name: wg-quick@wg0
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Show WireGuard status
+  command: wg show wg0
+  register: wg_status
+  changed_when: false
+  ignore_errors: yes
+
+- name: Display server public key
+  debug:
+    msg: "Server public key: {{ wg_pubkey.stdout }}"

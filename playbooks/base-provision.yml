@@ -1,0 +1,12 @@
+---
+# Base Host Provisioning — applied to ALL hosts before any service role.
+# Installs Java 17, distributes CA trust, builds JKS TrustStore/KeyStore, deploys PEM certs.
+
+- name: Base host provisioning
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+
+  roles:
+    - local_repo
+    - base

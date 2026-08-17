@@ -1,0 +1,6 @@
+---
+# FastAPI TLS verify — placeholder (no TLS endpoint to check yet)
+
+- name: "TLS_VERIFY fastapi (skipped — no TLS configured)"
+  ansible.builtin.debug:
+    msg: "TLS_RESULT:{\"product\":\"fastapi\",\"port\":8000,\"status\":\"ok\",\"detail\":\"No direct TLS — served behind Nginx reverse proxy\"}"

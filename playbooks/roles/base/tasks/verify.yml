@@ -1,0 +1,4 @@
+---
+- name: "TLS_VERIFY base (skipped — infrastructure role, no TLS endpoint)"
+  ansible.builtin.debug:
+    msg: "TLS_RESULT:{\"product\":\"base\",\"port\":0,\"status\":\"ok\",\"detail\":\"Infrastructure role — no TLS endpoint to verify\"}"

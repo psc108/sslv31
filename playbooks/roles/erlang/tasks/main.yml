@@ -1,0 +1,51 @@
+---
+# Erlang/OTP role — installs the Erlang runtime standalone. RabbitMQ's own
+# role installs erlang-nox/erlang directly alongside rabbitmq-server (for
+# atomic version pairing on that host) rather than including this role, so
+# this exists purely so "Erlang/OTP" is a real, working product when
+# selected/auto-added on its own (e.g. via check_compatibility's
+# auto_dependencies suggestion) rather than an include_role failure.
+
+- name: Install Erlang (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [erlang-nox]
+  when: ansible_facts.os_family == "Debian"
+
+# RHEL8's own repos (and EPEL) only carry Erlang 22 — far too old for modern
+# RabbitMQ (needs 26+) and not worth diverging from what the rabbitmq role
+# itself already relies on. Same Cloudsmith-hosted repo, added the same way
+# (explicit .repo content, no live script-fetch-and-exec) — see rabbitmq's
+# tasks/main.yml for the identical block; both roles installing this file
+# is idempotent (same content) if a host has both products.
+- name: Add RabbitMQ Erlang yum repo (RHEL)
+  ansible.builtin.copy:
+    content: |
+      [rabbitmq_erlang]
+      name=rabbitmq_erlang
+      baseurl=https://packagecloud.io/rabbitmq/erlang/el/8/$basearch
+      repo_gpgcheck=1
+      gpgcheck=0
+      enabled=1
+      gpgkey=https://packagecloud.io/rabbitmq/erlang/gpgkey
+      sslverify=1
+      sslcacert=/etc/pki/tls/certs/ca-bundle.crt
+      metadata_expire=300
+    dest: /etc/yum.repos.d/rabbitmq_erlang.repo
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install Erlang (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [erlang]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Verify Erlang installation
+  ansible.builtin.shell: erl -eval 'erlang:display(erlang:system_info(otp_release)), halt().' -noshell
+  register: erlang_check
+  changed_when: false
+
+- name: Show Erlang version
+  ansible.builtin.debug:
+    msg: "Erlang/OTP {{ erlang_check.stdout }}"

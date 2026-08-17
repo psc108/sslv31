@@ -1,0 +1,4 @@
+---
+- name: "TLS_VERIFY openjdk (skipped — runtime dependency, no TLS endpoint)"
+  ansible.builtin.debug:
+    msg: "TLS_RESULT:{\"product\":\"openjdk\",\"port\":0,\"status\":\"ok\",\"detail\":\"Runtime dependency — no TLS endpoint to verify\"}"

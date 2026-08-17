@@ -1,0 +1,248 @@
+---
+- domain: system
+  description: Domain for system administrators and service accounts
+- user: admin
+  password: ${password}
+  roles:
+      - BUSINESS_ADMIN
+- user: intadmin
+  password: ${password}
+  roles:
+      - BUSINESS_ADMIN
+- user: systemadmin
+  password: ${password}
+  roles:
+      - BUSINESS_SYSTEM_ADMIN
+- user: blobStoreSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - CUSTOMERS_ADMIN_READER
+- user: catalogSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - REQUEST_ADMIN
+      - REQUEST_USER
+      - ACL_ADMIN
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - SERVICE_USER
+      - PRICING_ADMIN
+      - PRICING_USER
+      - CONFIG_USER
+      - REPORTING_ADMIN
+- user: customersSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - REQUEST_ADMIN
+      - REQUEST_USER
+      - ACL_ADMIN
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - PRICING_ADMIN
+- user: externalEventsSvc
+  password: ${password}
+  roles:
+    - EXTERNAL_EVENTS_ADMIN
+    - CUSTOMERS_ADMIN_READER
+    - FULFILLMENT_NOTIFIER
+    - SERVICE_USER
+    - CONFIG_USER
+- user: fulfillmentSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - CUSTOMERS_SYSTEM_ADMIN
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - CONFIG_ADMIN
+      - PRICING_USER
+      - PRICING_ADMIN
+      - ACL_ADMIN
+      - REQUEST_ADMIN
+      - REQUEST_NOTIFICATION_SENDER
+      - REQUEST_USER
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - REPORTING_ADMIN
+      - TICKETING_USER
+      - EXTERNAL_EVENTS_ADMIN
+- user: requestSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - REQUEST_ADMIN
+      - REQUEST_USER
+      - ACL_ADMIN
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - SERVICE_USER
+      - PRICING_ADMIN
+      - REPORTING_ADMIN
+      - CONFIG_USER
+- user: serviceInstanceSvc
+  password: ${password}
+  roles:
+      - BLOB_STORE_ADMIN
+      - BLOB_STORE_USER
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - REQUEST_ADMIN
+      - REQUEST_USER
+      - ACL_ADMIN
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - SERVICE_USER
+      - REPORTING_ADMIN
+      - PRICING_ADMIN
+      - CONFIG_USER
+      - IMPERSONATOR
+- user: eventSvc
+  password: ${password}
+  roles:
+      - EVENT_ADMIN
+      - SERVICE_USER
+      - CONFIG_USER
+- user: monitor
+  password: ${password}
+  roles:
+      - MONITOR
+      - SERVICE_USER
+      - CONFIG_USER
+- user: pricingSvc
+  password: ${password}
+  roles:
+      - PRICING_ADMIN
+      - PRICING_USER
+      - SERVICE_USER
+      - CUSTOMERS_ADMIN
+      - CUSTOMERS_USER
+      - SERVICE_USER
+      - CONFIG_USER
+- user: reportingSvc
+  password: ${password}
+  roles:
+      - REPORTING_ADMIN
+      - PRICING_ADMIN
+      - PRICING_USER
+      - REQUEST_ADMIN
+      - REQUEST_USER
+      - ACL_ADMIN
+      - SERVICE_INSTANCES_ADMIN
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_USER
+      - FULFILLMENT_ADMIN
+      - CUSTOMERS_ADMIN
+      - SERVICE_USER
+      - CONFIG_USER
+      - CONFIG_ADMIN
+      - CATALOG_ADMIN_READER
+      - CATALOG_USER
+- user: ticketingSvc
+  password: ${password}
+  roles:
+      - TICKETING_ADMIN
+      - TICKETING_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - SERVICE_INSTANCES_USER
+      - SERVICE_INSTANCES_ADMIN_READER
+      - ACL_ADMIN
+      - CUSTOMERS_ADMIN_READER
+- user: exportSvc
+  password: ${password}
+  roles:
+      - EXPORT_IMPORT_USER
+      - BLOB_STORE_ADMIN
+      - CATALOG_ADMIN
+      - CATALOG_USER
+      - FULFILLMENT_ADMIN
+      - FULFILLMENT_USER
+      - PRICING_ADMIN
+      - CONFIG_USER
+      - SERVICE_USER
+      - IMPERSONATOR
+      - CUSTOMERS_ADMIN_READER
+      - CONFIG_DASHBOARD_ADMIN
+- user: portal
+  password: ${password}
+  roles:
+      - PRICING_USER
+      - REQUEST_USER
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_USER
+      - CATALOG_USER
+      - TICKETING_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - IMPERSONATOR
+      - CONFIG_ADMIN_READER
+- user: portalTest
+  password: ${password}
+  roles:
+      - PRICING_USER
+      - REQUEST_USER
+      - SERVICE_INSTANCES_USER
+      - FULFILLMENT_USER
+      - CATALOG_USER
+      - TICKETING_USER
+      - SERVICE_USER
+      - CONFIG_USER
+      - IMPERSONATOR
+- user: portalUiSvc
+  password: ${password}
+  roles:
+      - CONFIG_USER
+      - SERVICE_USER
+- user: managementUiSvc
+  password: ${password}
+  roles:
+      - CONFIG_USER
+      - SERVICE_USER
+- user: testadmin
+  password: ${password}
+  roles:
+      - BUSINESS_ADMIN
+- user: testsystemadmin
+  password: ${password}
+  roles:
+      - BUSINESS_SYSTEM_ADMIN

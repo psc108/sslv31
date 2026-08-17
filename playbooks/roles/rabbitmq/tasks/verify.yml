@@ -1,0 +1,64 @@
+---
+# Verify RabbitMQ TLS is working (AMQP + Management UI)
+
+- name: "TLS_VERIFY rabbitmq-amqp"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.rabbitmq_ssl_port | default(5671) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-amqp\",\"port\":{{ product_vars.rabbitmq_ssl_port | default(5671) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-amqp\",\"port\":{{ product_vars.rabbitmq_ssl_port | default(5671) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: rmq_amqp_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT rabbitmq-amqp"
+  ansible.builtin.debug:
+    msg: "{{ rmq_amqp_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+
+- name: "TLS_VERIFY rabbitmq-management"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.rabbitmq_management_ssl_port | default(15671) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-management\",\"port\":{{ product_vars.rabbitmq_management_ssl_port | default(15671) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-management\",\"port\":{{ product_vars.rabbitmq_management_ssl_port | default(15671) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: rmq_mgmt_check
+  changed_when: false
+  failed_when: false
+  when: product_vars.rabbitmq_enable_management | default(true) | bool
+
+- name: "TLS_OUTPUT rabbitmq-management"
+  ansible.builtin.debug:
+    msg: "{{ rmq_mgmt_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.rabbitmq_enable_management | default(true) | bool
+
+- name: "TLS_VERIFY rabbitmq-status"
+  ansible.builtin.shell: |
+    listeners=$(rabbitmqctl status 2>/dev/null | grep -A 20 "Listeners" | grep -E "ssl|amqp" || echo "")
+    if echo "$listeners" | grep -q "ssl"; then
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-listeners\",\"port\":0,\"status\":\"ok\",\"detail\":\"SSL listeners active\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"rabbitmq-listeners\",\"port\":0,\"status\":\"warning\",\"detail\":\"No SSL listeners detected in rabbitmqctl status\"}"
+    fi
+  register: rmq_status_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT rabbitmq-status"
+  ansible.builtin.debug:
+    msg: "{{ rmq_status_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"

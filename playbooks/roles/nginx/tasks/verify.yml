@@ -1,0 +1,24 @@
+---
+# Verify Nginx TLS is working
+
+- name: "TLS_VERIFY nginx"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.nginx_listen_port | default(443) }} -servername {{ product_vars.nginx_server_name | default('localhost') }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"nginx\",\"port\":{{ product_vars.nginx_listen_port | default(443) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"nginx\",\"port\":{{ product_vars.nginx_listen_port | default(443) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: nginx_tls_check
+  changed_when: false
+  failed_when: false
+
+- name: "TLS_OUTPUT nginx"
+  ansible.builtin.debug:
+    msg: "{{ nginx_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"

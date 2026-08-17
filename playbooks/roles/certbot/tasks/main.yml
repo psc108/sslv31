@@ -1,0 +1,52 @@
+---
+- name: Purge existing certbot
+  apt:
+    name: [certbot, python3-certbot-nginx, python3-certbot-apache]
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Install certbot
+  apt:
+    name: [certbot]
+    state: present
+    update_cache: yes
+
+- name: Install nginx plugin (if nginx present)
+  apt:
+    name: python3-certbot-nginx
+    state: present
+  when: "'nginx' in ansible_facts.packages | default({})"
+  ignore_errors: yes
+
+- name: Create webroot directory
+  file:
+    path: "{{ certbot_webroot | default('/var/www/html') }}"
+    state: directory
+    mode: "0755"
+  when: certbot_method | default('webroot') == 'webroot'
+
+- name: Request certificate
+  command: >
+    certbot certonly
+    --non-interactive
+    --agree-tos
+    --email {{ certbot_email }}
+    {% if certbot_method | default('webroot') == 'webroot' %}
+    --webroot -w {{ certbot_webroot | default('/var/www/html') }}
+    {% elif certbot_method | default('webroot') == 'standalone' %}
+    --standalone
+    {% endif %}
+    {% for domain in certbot_domains.split(',') %}
+    -d {{ domain | trim }}
+    {% endfor %}
+  args:
+    creates: "/etc/letsencrypt/live/{{ certbot_domains.split(',')[0] | trim }}/fullchain.pem"
+  when: certbot_email | default('') and certbot_domains | default('')
+
+- name: Enable auto-renewal timer
+  systemd:
+    name: certbot.timer
+    enabled: yes
+    state: started
+  ignore_errors: yes

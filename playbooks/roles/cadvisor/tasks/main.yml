@@ -1,0 +1,52 @@
+---
+- name: Remove existing cadvisor
+  file:
+    path: /usr/local/bin/cadvisor
+    state: absent
+
+- name: Remove existing systemd unit
+  file:
+    path: /etc/systemd/system/cadvisor.service
+    state: absent
+
+- name: Download cAdvisor binary
+  get_url:
+    url: "https://github.com/google/cadvisor/releases/download/v0.49.1/cadvisor-v0.49.1-linux-amd64"
+    dest: /usr/local/bin/cadvisor
+    mode: "0755"
+
+- name: Create systemd service
+  copy:
+    dest: /etc/systemd/system/cadvisor.service
+    content: |
+      [Unit]
+      Description=cAdvisor - Container Metrics
+      After=docker.service
+      Requires=docker.service
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/cadvisor \
+        --port={{ cadvisor_port | default(8080) }} \
+        --docker={{ cadvisor_docker_socket | default('/var/run/docker.sock') }}
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and start cadvisor
+  systemd:
+    name: cadvisor
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Verify cadvisor is listening
+  wait_for:
+    port: "{{ cadvisor_port | default(8080) }}"
+    delay: 3
+    timeout: 20

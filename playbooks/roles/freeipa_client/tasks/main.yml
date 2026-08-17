@@ -1,0 +1,40 @@
+---
+- name: Unenroll existing FreeIPA client
+  command: ipa-client-install --uninstall --unattended
+  ignore_errors: yes
+
+- name: Install FreeIPA client packages
+  apt:
+    name: [freeipa-client, sssd, sssd-tools]
+    state: present
+    update_cache: yes
+
+- name: Enroll in FreeIPA domain
+  command: >
+    ipa-client-install
+    --server={{ freeipa_server }}
+    --domain={{ freeipa_domain }}
+    --realm={{ freeipa_realm }}
+    --principal={{ freeipa_principal | default('admin') }}
+    --password={{ freeipa_password }}
+    {% if freeipa_mkhomedir | default(true) | bool %}--mkhomedir{% endif %}
+    --unattended
+    --force-join
+  register: ipa_enroll
+  changed_when: ipa_enroll.rc == 0
+
+- name: Verify SSSD is running
+  systemd:
+    name: sssd
+    enabled: yes
+    state: started
+
+- name: Test domain connectivity
+  command: id admin@{{ freeipa_domain }}
+  register: ipa_test
+  changed_when: false
+  ignore_errors: yes
+
+- name: Show enrollment result
+  debug:
+    msg: "{{ 'FreeIPA enrollment successful' if ipa_enroll.rc == 0 else 'Enrollment may have issues - check logs' }}"

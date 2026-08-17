@@ -1,0 +1,14 @@
+---
+- name: Deploy nginx server fullchain
+  ansible.builtin.copy:
+    content: "{{ _chain_pem }}"
+    dest: /etc/nginx/ssl/server-fullchain.pem
+    mode: "0644"
+  notify: reload nginx
+
+- name: Deploy nginx server key
+  ansible.builtin.copy:
+    content: "{{ _key_pem }}"
+    dest: /etc/nginx/ssl/server-key.pem
+    mode: "0600"
+  notify: reload nginx

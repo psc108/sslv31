@@ -1,0 +1,107 @@
+---
+# PHP-FPM runtime role — general-purpose PHP runtime for custom app
+# deployments (same category as python/nodejs/golang). Installs PHP-FPM
+# plus common extensions (mysqli/pdo_mysql, xml, mbstring, curl) and
+# configures the default pool to listen on TCP (127.0.0.1:9000 by default)
+# rather than a version-suffixed unix socket path, so anything reverse-
+# proxying to it doesn't need to know which PHP version got installed.
+#
+# Not a dependency the Adminer role relies on at execution time — Adminer
+# installs its own PHP-FPM directly (see playbooks/roles/adminer/tasks/
+# main.yml for why), so this role and Adminer's internal PHP-FPM install
+# are independent and don't conflict if both happen to run on the same host.
+
+- name: Purge existing PHP installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop 'php*-fpm' 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y 'php*' 2>/dev/null || true
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing PHP installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop php-fpm 2>/dev/null || true
+    dnf remove -y php-fpm php-cli php-common 2>/dev/null || true
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install PHP-FPM and extensions (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [php-fpm, php-cli, php-mysql, php-xml, php-mbstring, php-curl]
+  when: ansible_facts.os_family == "Debian"
+
+# RHEL8's default "php" module stream is 7.2 (EOL) — enable a modern stream
+# explicitly, same reasoning as every other "RHEL8 default repo version is
+# too old" workaround in this playbook set (see rabbitmq/erlang's own
+# comment on the same class of problem). Specifically 8.2, not 8.1 — RHEL8's
+# AppStream module list jumps straight from php:8.0 to php:8.2 (confirmed
+# via `dnf module list php` against the actual RHEL8 target image: streams
+# are 7.2/7.3/7.4/8.0/8.2, no 8.1 at all), so php:8.1 fails outright with
+# "missing groups or modules: php:8.1" — found via a real failed build, not
+# assumed.
+- name: Enable PHP 8.2 module stream (RHEL)
+  ansible.builtin.shell: |
+    dnf module reset php -y
+    dnf module enable php:8.2 -y
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install PHP-FPM and extensions (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [php-fpm, php-cli, php-mysqlnd, php-xml, php-mbstring, php-curl]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Discover PHP-FPM pool config path (Debian)
+  ansible.builtin.shell: find /etc/php -name www.conf -path '*fpm*' 2>/dev/null | head -1
+  register: php_fpm_pool_debian
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Discover PHP-FPM service name (Debian)
+  ansible.builtin.shell: systemctl list-unit-files 'php*-fpm.service' --no-legend | awk '{print $1}' | head -1
+  register: php_fpm_service_debian
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Set PHP-FPM facts
+  ansible.builtin.set_fact:
+    php_fpm_pool_conf: "{{ php_fpm_pool_debian.stdout | trim if ansible_facts.os_family == 'Debian' else '/etc/php-fpm.d/www.conf' }}"
+    php_fpm_service: "{{ php_fpm_service_debian.stdout | trim if ansible_facts.os_family == 'Debian' else 'php-fpm' }}"
+    php_fpm_listen: "{{ product_vars.php_fpm_listen | default('127.0.0.1:9000') }}"
+
+- name: Configure PHP-FPM pool to listen on TCP
+  ansible.builtin.lineinfile:
+    path: "{{ php_fpm_pool_conf }}"
+    regexp: '^listen\s*='
+    line: "listen = {{ php_fpm_listen }}"
+  notify: restart php-fpm
+
+- name: Enable and start PHP-FPM
+  ansible.builtin.service:
+    name: "{{ php_fpm_service }}"
+    state: started
+    enabled: true
+
+- name: Verify PHP-FPM is listening
+  ansible.builtin.wait_for:
+    host: "{{ php_fpm_listen.split(':')[0] }}"
+    port: "{{ php_fpm_listen.split(':')[1] }}"
+    delay: 2
+    timeout: 15
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.php_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.php_sudo_nopasswd | default(false) }}"
+  when: (product_vars.php_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.php_file_deployments }}"
+  when: (product_vars.php_file_deployments | default([])) | length > 0

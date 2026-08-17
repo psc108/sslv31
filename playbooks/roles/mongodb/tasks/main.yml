@@ -1,0 +1,120 @@
+---
+- name: Purge existing mongodb
+  apt:
+    name: [mongodb-org, mongod, mongosh]
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Remove mongodb data
+  file:
+    path: /var/lib/mongodb
+    state: absent
+
+- name: Install gnupg (required by apt_key)
+  apt:
+    name: gnupg
+    state: present
+    update_cache: yes
+
+- name: Import MongoDB GPG key
+  apt_key:
+    url: https://www.mongodb.org/static/pgp/server-8.0.asc
+    state: present
+
+- name: Add MongoDB repository
+  apt_repository:
+    repo: "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu {{ ansible_facts.distribution_release }}/mongodb-org/8.0 multiverse"
+    state: present
+    filename: mongodb-org-8.0
+
+- name: Install mongodb
+  apt:
+    name: mongodb-org
+    state: present
+    update_cache: yes
+
+# Bare mongo_* vars were never actually wired up — site.yml's product loop
+# only sets product_vars (the whole dict), never flattens it into bare names,
+# so every reference here used to silently fall through to its | default(...)
+# regardless of what was actually configured. Every reference is now
+# product_vars.<key>, matching mongo_*'s own config_schema keys in
+# catalogue_service.py and the working pattern already used by rabbitmq/mysql.
+
+- name: Create mongodb SSL directory
+  file:
+    path: /etc/mongod/ssl
+    state: directory
+    owner: mongodb
+    group: mongodb
+    mode: "0750"
+  when: product_vars.mongo_tls_enabled | default(true) | bool
+
+# mongod's certificateKeyFile wants cert+key concatenated in one PEM, unlike
+# the other TLS roles here which take separate cert/key files.
+- name: Deploy MongoDB server certificate+key (combined PEM)
+  copy:
+    content: "{{ server_cert_pem }}\n{{ server_key_pem }}"
+    dest: /etc/mongod/ssl/server.pem
+    owner: mongodb
+    group: mongodb
+    mode: "0600"
+  when: product_vars.mongo_tls_enabled | default(true) | bool
+
+- name: Deploy MongoDB CA chain
+  copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/mongod/ssl/ca.crt
+    owner: mongodb
+    group: mongodb
+    mode: "0644"
+  when: product_vars.mongo_tls_enabled | default(true) | bool
+
+- name: Configure mongod
+  copy:
+    dest: /etc/mongod.conf
+    content: |
+      storage:
+        dbPath: /var/lib/mongodb
+      systemLog:
+        destination: file
+        logAppend: true
+        path: /var/log/mongodb/mongod.log
+      net:
+        port: {{ product_vars.mongo_port | default(27017) }}
+        bindIp: {{ product_vars.mongo_bind_ip | default('0.0.0.0') }}
+      {% if product_vars.mongo_tls_enabled | default(true) | bool %}
+        tls:
+          mode: requireTLS
+          certificateKeyFile: /etc/mongod/ssl/server.pem
+          CAFile: /etc/mongod/ssl/ca.crt
+      {% endif %}
+      security:
+        authorization: enabled
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and restart mongod
+  systemd:
+    name: mongod
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Wait for mongod to start
+  wait_for:
+    port: "{{ product_vars.mongo_port | default(27017) }}"
+    delay: 2
+    timeout: 30
+
+- name: Create admin user
+  command: >
+    mongosh --port {{ product_vars.mongo_port | default(27017) }} --eval '
+    db.getSiblingDB("admin").createUser({
+      user: "admin",
+      pwd: "{{ product_vars.mongo_admin_password }}",
+      roles: ["root"]
+    })'
+  ignore_errors: yes
+  when: product_vars.mongo_admin_password | default('') | length > 0

@@ -1,0 +1,81 @@
+---
+- name: Merge product vars
+  set_fact:
+    nfs_exports: "{{ product_vars.nfs_exports | default([]) }}"
+
+# An empty nfs_exports makes the copy task below render an empty string,
+# which the copy module then rejects with a low-level, confusing
+# "src (or content) is required" error rather than saying what's actually
+# wrong — fail fast with a clear message instead.
+- name: Require at least one export
+  fail:
+    msg: >-
+      No NFS exports configured for this host (nfs_exports is empty).
+      At least one {"path": "...", "clients": "...", "options": "..."}
+      entry is required — check the product's config in the environment's
+      Product Configuration form, or the template's own baked-in vars.
+  when: nfs_exports | length == 0
+
+- name: Purge existing NFS server (Debian)
+  apt:
+    name: [nfs-kernel-server, nfs-common]
+    state: absent
+    purge: true
+  ignore_errors: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install NFS server (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [nfs-kernel-server, nfs-common]
+  when: ansible_facts.os_family == "Debian"
+
+# No purge-then-reinstall for RHEL the way Debian gets one: nfs-utils isn't
+# in any of UBI8's own repos (see docker/Dockerfile.target-rhel8) — it's
+# baked into the image from a CentOS Stream vault mirror that's only added
+# temporarily at image-build time, not present at runtime. Purging it here
+# would make it permanently unavailable for the rest of this container's
+# life, found via a real run: "Purge" removed it, then "Install" immediately
+# failed with "No match for argument: nfs-utils" since nothing at runtime
+# can re-fetch it. A plain idempotent install against the already-baked-in
+# package is all that's needed.
+- name: Install NFS server (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [nfs-utils]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Create export directories
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ nfs_exports }}"
+
+- name: Write /etc/exports
+  copy:
+    content: |
+      {% for export in nfs_exports %}
+      {{ export.path }} {{ export.clients | default('*') }}({{ export.options | default('rw,sync,no_subtree_check,no_root_squash') }})
+      {% endfor %}
+    dest: /etc/exports
+    mode: "0644"
+
+# Service unit is "nfs-kernel-server" on Debian/Ubuntu, "nfs-server" on RHEL —
+# the export config/exportfs command itself is identical across both.
+- name: Enable and start NFS server (Debian)
+  systemd:
+    name: nfs-kernel-server
+    enabled: true
+    state: restarted
+  when: ansible_facts.os_family == "Debian"
+
+- name: Enable and start NFS server (RHEL)
+  systemd:
+    name: nfs-server
+    enabled: true
+    state: restarted
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Re-export all shares
+  command: exportfs -ra

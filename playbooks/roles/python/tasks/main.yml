@@ -1,0 +1,78 @@
+---
+# Python role — Python 3 is pre-installed on Ubuntu 24.04.
+# Ensures pip and venv are available.
+
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    python_extra_pip_packages: "{{ (product_vars.python_extra_pip_packages | default('')).split(',') | map('trim') | select | join(' ') }}"
+
+- name: Install Python packages (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [python3-pip, python3-venv]
+    resilient_apt_update_cache: false
+  when: ansible_facts.os_family == "Debian"
+
+# python3.11, not RHEL8's system python3 (3.6) — same reasoning as
+# keystone/uvicorn. Installed alongside (not replacing) the system python3,
+# since RHEL8's own dnf/yum tooling is tied to 3.6 — this role reports and
+# pip-installs against python3.11 as "the" usable toolchain it provides,
+# matching what consumers of this product (e.g. a file_deployments-driven
+# script wanting a modern interpreter) should actually use.
+- name: Install Python packages (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [python3.11, python3.11-pip]
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Verify Python version (Debian)
+  ansible.builtin.command: python3 --version
+  changed_when: false
+  register: python_check_debian
+  when: ansible_facts.os_family == "Debian"
+
+- name: Verify Python version (RHEL)
+  ansible.builtin.command: python3.11 --version
+  changed_when: false
+  register: python_check_rhel
+  when: ansible_facts.os_family == "RedHat"
+
+# Both branches above used to register into the SAME "python_check" name —
+# the skipped branch's result (a {"skipped": true, ...} dict with no
+# .stdout) always runs (register: still fires even when a task is skipped)
+# and unconditionally overwrote whichever branch actually ran, so this task
+# always failed with "object of type 'dict' has no attribute 'stdout'"
+# regardless of OS. Found via a real live run, not assumed — separate
+# register names per branch fixes it.
+- name: Report Python version
+  ansible.builtin.debug:
+    msg: "{{ (python_check_debian if ansible_facts.os_family == 'Debian' else python_check_rhel).stdout }}"
+
+# No dedicated venv at this role's own scope (it just ensures the system
+# Python/pip/venv toolchain exists — hosts that need an isolated venv get
+# one from whichever product actually needs it, e.g. uvicorn's own
+# /opt/app/venv), so these install system-wide via --break-system-packages
+# — Debian 12+/Ubuntu 24.04 python3-pip refuses a bare system-wide install
+# otherwise (PEP 668). Deliberate for a host-level toolchain product like
+# this one; anything wanting isolation should use a venv-based product
+# (uvicorn) or its own venv via a file_deployments-driven script instead.
+- name: Install extra pip packages system-wide (Debian)
+  ansible.builtin.shell: |
+    set -o pipefail
+    pip3 install --break-system-packages {{ python_extra_pip_packages }} 2>&1 | tail -20
+  args:
+    executable: /bin/bash
+  when: python_extra_pip_packages | length > 0 and ansible_facts.os_family == "Debian"
+  changed_when: true
+
+# RHEL8's python3.11 has no PEP 668 externally-managed-environment
+# restriction the way Debian 12+/Ubuntu 24.04's system pip does, so no
+# --break-system-packages equivalent is needed here.
+- name: Install extra pip packages system-wide (RHEL)
+  ansible.builtin.shell: |
+    set -o pipefail
+    python3.11 -m pip install {{ python_extra_pip_packages }} 2>&1 | tail -20
+  args:
+    executable: /bin/bash
+  when: python_extra_pip_packages | length > 0 and ansible_facts.os_family == "RedHat"
+  changed_when: true

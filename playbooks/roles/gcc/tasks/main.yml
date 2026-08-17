@@ -1,0 +1,22 @@
+---
+- name: Install build-essential and GCC
+  apt:
+    name: [build-essential, gcc, g++, cpp]
+    state: present
+    update_cache: yes
+
+- name: Install extra build tools
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ (gcc_extras | default('cmake,make,gdb')).split(',') | map('trim') | select | list }}"
+  ignore_errors: yes
+
+- name: Verify GCC installation
+  command: gcc --version
+  register: gcc_ver
+  changed_when: false
+
+- name: Show GCC version
+  debug:
+    msg: "{{ gcc_ver.stdout_lines[0] }}"

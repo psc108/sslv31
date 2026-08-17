@@ -1,0 +1,350 @@
+# Java/Spring Boot + vRA Network Debugging Guide (Starting Guide)
+
+**Purpose**:
+Diagnose network-related issues (e.g., incorrect network assignment, refused connections) between a **Java/Spring Boot application** and **VMware vRealize Automation (vRA)** when fetching blueprints or submitting requests.
+
+---
+
+---
+
+## **1. Overview of the Problem**
+Your Spring Boot app connects to **vRA** to:
+- Fetch blueprints (product catalog).
+- Submit deployment requests.
+
+**Common Issues**:
+- **Network assignment errors** (e.g., "Network not available for project").
+- **HTTP 400/403 errors** from vRA API.
+- **Payload validation failures** (e.g., missing `networkId`).
+- **SSL/TLS or proxy issues**.
+
+**Error Codes of Interest**:
+| Code  | Meaning                          | Likely Cause                          |
+|-------|----------------------------------|----------------------------------------|
+| 1028  | "Error writing `<writeString>`"  | Serialization/I/O failure (e.g., payload too large, malformed data). |
+| 1001  | "Communication Error"            | Network/protocol failure (e.g., HTTP request rejected, timeout). |
+
+---
+
+---
+
+## **2. Enable Detailed Logging**
+
+### **2.1 JVM-Level Network Debugging**
+Enable **full network logging** for the JVM to capture HTTP/HTTPS traffic, SSL handshakes, and payloads.
+
+#### **Command**:
+```bash
+java -Djavax.net.debug=all -Djava.util.logging.config.file=/path/to/logging.properties -jar your-app.jar
+```
+
+#### **Flags**:
+| Flag | Purpose |
+|------|---------|
+| `-Djavax.net.debug=all` | Logs all network operations (TCP, HTTP, SSL). |
+| `-Djava.util.logging.config.file` | Custom logging configuration (optional). |
+
+#### **What to Look For**:
+- **HTTP request/response headers** (e.g., `403 Forbidden`).
+- **SSL/TLS handshake errors** (e.g., certificate issues).
+- **Payloads** (if logged; may require additional config).
+
+#### **Log Location**:
+- **stdout** (or a file if redirected).
+- Filter for:
+  ```bash
+  grep -i "error\|400\|403\|404\|500" /path/to/logs
+  ```
+
+---
+
+### **2.2 Spring Boot HTTP Logging**
+Enable **debug logging** for Spring’s HTTP clients (`RestTemplate`, `WebClient`).
+
+#### **For `RestTemplate` (Spring MVC)**:
+Add to `application.properties`:
+```properties
+logging.level.org.springframework.web.client.RestTemplate=DEBUG
+logging.level.org.apache.http=DEBUG
+logging.level.org.apache.http.headers=DEBUG
+```
+
+#### **For `WebClient` (Spring WebFlux)**:
+```properties
+logging.level.org.springframework.web.reactive.function.client=DEBUG
+```
+
+#### **What to Look For**:
+- **Full HTTP requests/responses** (headers + body).
+- **Status codes** (e.g., `400`, `403`).
+- **Error messages** from vRA (e.g., `"Network not assigned"`).
+
+#### **Log Location**:
+- Spring Boot console or log file (e.g., `application.log`).
+
+---
+
+### **2.3 Custom Request/Response Interceptor**
+Add a **logging interceptor** to `RestTemplate` to capture payloads:
+
+```java
+RestTemplate restTemplate = new RestTemplate();
+restTemplate.getInterceptors().add(new LoggingInterceptor());
+
+public class LoggingInterceptor implements ClientHttpRequestInterceptor {
+    @Override
+    public ClientHttpResponse intercept(
+        HttpRequest request,
+        byte[] body,
+        ClientHttpRequestExecution execution
+    ) throws IOException {
+        System.out.println("=== Request ===");
+        System.out.println("URI: " + request.getURI());
+        System.out.println("Headers: " + request.getHeaders());
+        System.out.println("Body: " + new String(body));
+
+        ClientHttpResponse response = execution.execute(request, body);
+
+        System.out.println("=== Response ===");
+        System.out.println("Status: " + response.getStatusCode());
+        System.out.println("Headers: " + response.getHeaders());
+        System.out.println("Body: " + new String(response.getBody().readAllBytes()));
+
+        return response;
+    }
+}
+```
+
+#### **What to Look For**:
+- **Request payloads** (e.g., missing `networkId`).
+- **Response errors** (e.g., `"Invalid network assignment"`).
+
+---
+
+---
+
+## **3. Use a Proxy to Inspect Traffic**
+Route traffic through a **proxy** to capture and analyze payloads.
+
+### **3.1 Fiddler (GUI)**
+1. **Install Fiddler** and enable **HTTPS decryption**.
+2. **Configure Java to use Fiddler**:
+   ```bash
+   java -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8888 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8888 -jar your-app.jar
+   ```
+3. **Monitor traffic** in Fiddler:
+   - Look for **failed requests** (e.g., `403`, `400`).
+   - Inspect **request/response bodies** for errors.
+
+### **3.2 Charles Proxy (GUI)**
+1. **Install Charles** and enable **SSL proxying**.
+2. **Configure Java**:
+   ```bash
+   java -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8888 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8888 -jar your-app.jar
+   ```
+3. **Check for**:
+   - Refused connections.
+   - Malformed payloads.
+
+### **3.3 mitmproxy (CLI)**
+1. **Run mitmproxy**:
+   ```bash
+   mitmproxy --mode transparent --showhost
+   ```
+2. **Configure Java**:
+   ```bash
+   java -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8080 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8080 -jar your-app.jar
+   ```
+3. **Analyze traffic** in real-time.
+
+#### **What to Look For**:
+- **HTTP errors** (e.g., `400 Bad Request`).
+- **Payloads** (e.g., missing network parameters).
+- **Headers** (e.g., `Authorization`, `Content-Type`).
+
+---
+
+---
+
+## **4. Network-Level Monitoring**
+Capture **raw network traffic** to/from vRA.
+
+### **4.1 tcpdump (Linux)**
+```bash
+tcpdump -i any -A -s 0 'host <vRA_IP_or_hostname> and (port 443 or port 80)'
+```
+- **`-i any`**: Listen on all interfaces.
+- **`-A`**: Print payloads in ASCII.
+- **`-s 0`**: Capture full packets.
+- **`host <vRA_IP>`**: Filter for vRA traffic.
+
+#### **What to Look For**:
+- **TCP resets (`RST` flags)** (connection refused).
+- **HTTP error codes** (e.g., `403 Forbidden`).
+
+### **4.2 Wireshark (GUI)**
+- Filter for **HTTP/HTTPS traffic** to/from vRA.
+- Look for:
+  - **Failed handshakes** (SSL/TLS).
+  - **HTTP errors** (e.g., `400`, `500`).
+
+---
+
+---
+
+## **5. vRA-Specific Debugging**
+### **5.1 Check vRA API Responses**
+If the issue is **network assignment**, look for:
+- **HTTP `400 Bad Request`** or **`403 Forbidden`**.
+- **Error messages** in the response body:
+  - `"Network 'X' is not available for project 'Y'"`
+  - `"Invalid network configuration"`
+
+### **5.2 Verify Request Payloads**
+Ensure the **blueprint request** includes:
+- Correct `networkId` or `subnetId`.
+- Valid project/tenant context.
+
+**Example Payload Issue**:
+```json
+{
+  "blueprintId": "123",
+  "parameters": {
+    "networkId": "INVALID_NETWORK"  // <-- Should be a valid vRA network ID.
+  }
+}
+```
+
+### **5.3 vRA Logs**
+If you have **access to vRA**, check:
+- **`/var/log/vmware/vcac/`** (vRA appliance logs).
+- **`catalina.out`** (Tomcat logs).
+- **`vra-api.log`** (API-specific errors).
+
+#### **What to Look For**:
+- **"Rejected request due to network policy"**.
+- **"Project does not have access to network"**.
+
+---
+
+---
+
+## **6. Step-by-Step Debugging Workflow**
+
+| Step | Action | Tool/Command | What to Look For |
+|------|--------|--------------|------------------|
+| 1 | Enable JVM network logging | `-Djavax.net.debug=all` | HTTP/HTTPS errors, payloads |
+| 2 | Enable Spring HTTP logging | `logging.level.org.springframework.web.client=DEBUG` | Request/response details |
+| 3 | Add a `RestTemplate` interceptor | Custom Java code | vRA API request/response bodies |
+| 4 | Use a proxy (Fiddler/Charles) | `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8888` | Failed requests, payloads |
+| 5 | Capture raw traffic | `tcpdump` or Wireshark | TCP resets, HTTP errors |
+| 6 | Check vRA logs | `/var/log/vmware/vcac/` | Server-side refusals |
+
+---
+
+---
+
+## **7. Common Findings for Network Assignment Issues**
+
+| Symptom | Likely Cause | Where to Confirm |
+|---------|--------------|------------------|
+| HTTP `400 Bad Request` | Malformed payload (e.g., missing `networkId`) | Spring logs, proxy, vRA logs |
+| HTTP `403 Forbidden` | Permission issue (project lacks network access) | vRA logs, proxy |
+| TCP `RST` (reset) | Firewall/network blocking traffic | `tcpdump`, Wireshark |
+| SSL handshake failure | Certificate/HTTPS misconfiguration | JVM network logs (`-Djavax.net.debug=ssl`) |
+| Timeout | Slow network or vRA unavailability | JVM logs, proxy |
+
+---
+
+---
+
+## **8. Example Debugging Session**
+
+### **Scenario**:
+- Your app fails to fetch blueprints from vRA.
+- Suspected issue: **Incorrect network assignment**.
+
+### **Steps**:
+1. **Run the app with JVM network logging**:
+   ```bash
+   java -Djavax.net.debug=all -jar your-app.jar > debug.log 2>&1
+   ```
+2. **Reproduce the issue** (e.g., call the `/blueprints` endpoint).
+3. **Check `debug.log` for errors**:
+   ```bash
+   grep -i "403\|400\|network\|error" debug.log
+   ```
+   - **Finding**: `HTTP/1.1 403 Forbidden` + `"Network 'prod-net' not available for project 'dev'"`.
+4. **Inspect the payload** in Fiddler/Charles:
+   - **Finding**: The request body is missing `networkId`.
+5. **Fix the payload** to include the correct `networkId`.
+6. **Verify in vRA logs**:
+   - Confirm the project has access to the network.
+
+---
+
+---
+
+## **9. Tools Summary**
+
+| Tool | Purpose | Command/Config |
+|------|---------|----------------|
+| JVM Network Logging | Log HTTP/HTTPS/SSL traffic | `-Djavax.net.debug=all` |
+| Spring Boot Logging | Log `RestTemplate`/`WebClient` calls | `logging.level.org.springframework.web.client=DEBUG` |
+| Fiddler/Charles | Proxy for inspecting traffic | `-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8888` |
+| mitmproxy | CLI proxy for traffic inspection | `mitmproxy --mode transparent` |
+| tcpdump | Capture raw network traffic | `tcpdump -i any -A -s 0 'host <vRA_IP>'` |
+| Wireshark | GUI for network analysis | Filter for `http` or `tcp.port == 443` |
+| vRA Logs | Server-side errors | `/var/log/vmware/vcac/` |
+
+---
+
+---
+
+## **10. Quick Reference: Commands to Run**
+
+### **For JVM Logging**:
+```bash
+java -Djavax.net.debug=all -jar your-app.jar
+```
+
+### **For Spring Boot Logging**:
+```properties
+# application.properties
+logging.level.org.springframework.web.client=DEBUG
+logging.level.org.apache.http=DEBUG
+```
+
+### **For Proxy Debugging (Fiddler)**:
+```bash
+java -Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8888 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8888 -jar your-app.jar
+```
+
+### **For Raw Traffic Capture**:
+```bash
+tcpdump -i any -A -s 0 'host <vRA_IP> and (port 443 or port 80)'
+```
+
+---
+
+---
+
+## **11. Troubleshooting Checklist**
+
+- [ ] **Enable JVM network logging** (`-Djavax.net.debug=all`).
+- [ ] **Enable Spring HTTP logging** (`DEBUG` for `RestTemplate`/`WebClient`).
+- [ ] **Use a proxy** (Fiddler/Charles/mitmproxy) to inspect traffic.
+- [ ] **Check vRA logs** for server-side errors.
+- [ ] **Verify payloads** for missing/invalid fields (e.g., `networkId`).
+- [ ] **Capture raw traffic** (`tcpdump`/`Wireshark`) for low-level issues.
+- [ ] **Test with a minimal payload** to isolate the issue.
+
+---
+
+---
+
+## **12. Further Reading**
+- [Java Networking Debugging Guide](https://docs.oracle.com/javase/8/docs/technotes/guides/net/properties.html)
+- [Spring Boot Logging Documentation](https://docs.spring.io/spring-boot/docs/current/reference/html/features.html#features.logging)
+- [vRA API Documentation](https://developer.vmware.com/apis/vra)
+- [Wireshark HTTP Analysis](https://www.wireshark.org/docs/dfref/h/http.html)

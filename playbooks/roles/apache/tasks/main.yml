@@ -1,0 +1,180 @@
+---
+# Apache HTTPD role — install and configure as a standalone TLS web server
+# (mod_ssl). Required vars: server_cert_pem, server_key_pem, ca_chain_pem
+# Optional vars (via product_vars): apache_server_name, apache_listen_port,
+# apache_document_root, apache_sudo_users, apache_sudo_nopasswd,
+# apache_file_deployments. Product vars passed via product_vars dict are
+# merged automatically.
+#
+# Distinct from keystone's own Apache install (which configures mod_wsgi for
+# the Keystone WSGI app specifically, under /etc/apache2/mods-*/wsgi.*) —
+# this role exists so "Apache HTTPD" is selectable/auto-addable as its own
+# catalogue product, independent of Keystone.
+
+# --- Nuke existing installation for clean state ---
+
+- name: Purge existing Apache installation (Debian)
+  ansible.builtin.shell: |
+    systemctl stop apache2 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y apache2 apache2-bin apache2-data apache2-utils 2>/dev/null || true
+    rm -rf /etc/apache2/ssl
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Purge existing Apache installation (RHEL)
+  ansible.builtin.shell: |
+    systemctl stop httpd 2>/dev/null || true
+    dnf remove -y httpd mod_ssl 2>/dev/null || true
+    rm -rf /etc/httpd/ssl /etc/httpd/conf.d
+  changed_when: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Fresh install ---
+
+- name: Set apache vars from product config
+  ansible.builtin.set_fact:
+    apache_server_name: "{{ product_vars.apache_server_name | default(service_role + '.internal') }}"
+    apache_listen_port: "{{ product_vars.apache_listen_port | default(443) }}"
+    apache_document_root: "{{ product_vars.apache_document_root | default('/var/www/html') }}"
+    apache_service_name: "{{ 'apache2' if ansible_facts.os_family == 'Debian' else 'httpd' }}"
+    apache_ssl_dir: "{{ '/etc/apache2/ssl' if ansible_facts.os_family == 'Debian' else '/etc/httpd/ssl' }}"
+  when: product_vars is defined
+
+- name: Install Apache (Debian)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_apt_install.yml
+  vars:
+    resilient_apt_packages: [apache2]
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install Apache (RHEL)
+  ansible.builtin.include_tasks: ../../common/tasks/resilient_dnf_install.yml
+  vars:
+    resilient_dnf_packages: [httpd, mod_ssl]
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Remove distro-default site/vhost configs so our own vhost is the only
+#     one bound to :80/:443 (avoids duplicate-Listen and conflicting
+#     default-vhost startup errors) ---
+
+- name: Remove default Apache site configs (Debian)
+  ansible.builtin.shell: |
+    a2dissite 000-default 2>/dev/null || true
+    a2dissite default-ssl 2>/dev/null || true
+    rm -f /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/default-ssl.conf
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Overwrite Apache ports.conf (Debian)
+  ansible.builtin.copy:
+    content: |
+      Listen 80
+    dest: /etc/apache2/ports.conf
+    mode: "0644"
+  when: ansible_facts.os_family == "Debian"
+  notify: reload apache
+
+- name: Enable Apache SSL module (Debian)
+  ansible.builtin.shell: a2enmod ssl
+  changed_when: true
+  when: ansible_facts.os_family == "Debian"
+
+- name: Remove default Apache configs (RHEL)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/httpd/conf.d/ssl.conf
+    - /etc/httpd/conf.d/welcome.conf
+    - /etc/httpd/conf.d/autoindex.conf
+    - /etc/httpd/conf.d/userdir.conf
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Deploy TLS certificates ---
+
+- name: Create Apache SSL directory
+  ansible.builtin.file:
+    path: "{{ apache_ssl_dir }}"
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+- name: Deploy Apache server certificate
+  ansible.builtin.copy:
+    content: "{{ server_cert_pem }}\n{{ ca_chain_pem }}"
+    dest: "{{ apache_ssl_dir }}/server-fullchain.pem"
+    mode: "0644"
+  notify: reload apache
+
+- name: Deploy Apache private key
+  ansible.builtin.copy:
+    content: "{{ server_key_pem }}"
+    dest: "{{ apache_ssl_dir }}/server-key.pem"
+    mode: "0600"
+  notify: reload apache
+
+# --- Document root + vhost ---
+
+- name: Create Apache document root
+  ansible.builtin.file:
+    path: "{{ apache_document_root }}"
+    state: directory
+    mode: "0755"
+
+- name: Deploy Apache document root index page
+  ansible.builtin.copy:
+    content: "<html><body><h1>It works!</h1></body></html>\n"
+    dest: "{{ apache_document_root }}/index.html"
+    mode: "0644"
+
+- name: Deploy Apache health check file
+  ansible.builtin.copy:
+    content: "ok"
+    dest: "{{ apache_document_root }}/health"
+    mode: "0644"
+
+- name: Deploy Apache TLS vhost
+  ansible.builtin.template:
+    src: vhost-ssl.conf.j2
+    dest: "{{ '/etc/apache2/sites-available/default-ssl.conf' if ansible_facts.os_family == 'Debian' else '/etc/httpd/conf.d/vhost-ssl.conf' }}"
+    mode: "0644"
+  notify: reload apache
+
+- name: Enable Apache TLS vhost (Debian)
+  ansible.builtin.file:
+    src: /etc/apache2/sites-available/default-ssl.conf
+    dest: /etc/apache2/sites-enabled/default-ssl.conf
+    state: link
+  when: ansible_facts.os_family == "Debian"
+  notify: reload apache
+
+- name: Validate Apache configuration (Debian)
+  ansible.builtin.command: apache2ctl configtest
+  changed_when: false
+  when: ansible_facts.os_family == "Debian"
+
+- name: Validate Apache configuration (RHEL)
+  ansible.builtin.command: apachectl configtest
+  changed_when: false
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Enable and start Apache
+  ansible.builtin.service:
+    name: "{{ apache_service_name }}"
+    state: started
+    enabled: true
+
+# --- Sudo users ---
+
+- name: Configure sudo users
+  ansible.builtin.include_tasks: ../../common/tasks/sudo_users.yml
+  vars:
+    sudo_users_list: "{{ product_vars.apache_sudo_users | default('') }}"
+    sudo_nopasswd: "{{ product_vars.apache_sudo_nopasswd | default(false) }}"
+  when: (product_vars.apache_sudo_users | default('')) | length > 0
+
+- name: Deploy custom files
+  ansible.builtin.include_tasks: ../../common/tasks/file_deployments.yml
+  vars:
+    file_deployments: "{{ product_vars.apache_file_deployments }}"
+  when: (product_vars.apache_file_deployments | default([])) | length > 0

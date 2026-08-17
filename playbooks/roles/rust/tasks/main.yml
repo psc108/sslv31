@@ -1,0 +1,44 @@
+---
+- name: Install build prerequisites
+  apt:
+    name: [curl, build-essential]
+    state: present
+    update_cache: yes
+
+- name: Remove existing rustup installation
+  file:
+    path: "{{ '/root' if rust_user | default('root') == 'root' else '/home/' + rust_user | default('root') }}/.rustup"
+    state: absent
+
+- name: Remove existing cargo installation
+  file:
+    path: "{{ '/root' if rust_user | default('root') == 'root' else '/home/' + rust_user | default('root') }}/.cargo"
+    state: absent
+
+- name: Install rustup
+  shell: |
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  become: yes
+  become_user: "{{ rust_user | default('root') }}"
+  args:
+    creates: "{{ '/root' if rust_user | default('root') == 'root' else '/home/' + rust_user | default('root') }}/.cargo/bin/rustc"
+
+- name: Add cargo to system PATH
+  copy:
+    dest: /etc/profile.d/rust.sh
+    content: |
+      if [ -d "$HOME/.cargo/bin" ]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
+      fi
+    mode: "0644"
+
+- name: Verify Rust installation
+  shell: "{{ '/root' if rust_user | default('root') == 'root' else '/home/' + rust_user | default('root') }}/.cargo/bin/rustc --version"
+  become: yes
+  become_user: "{{ rust_user | default('root') }}"
+  register: rust_ver
+  changed_when: false
+
+- name: Show Rust version
+  debug:
+    msg: "{{ rust_ver.stdout }}"

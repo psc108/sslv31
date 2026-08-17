@@ -1,0 +1,40 @@
+services:
+  certmanager:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ssl-cert-manager
+    ports:
+      - "80:80"       # Nginx serves frontend + proxies API
+      - "8000:8000"   # Direct API access (optional, for debugging)
+    volumes:
+      - certmanager-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DATA_DIR=/data
+      - BACKUP_DIR=/data/backups
+      - LOG_LEVEL=INFO
+      # SCEP Protocol (uncomment to enable)
+      # - SCEP_ENABLED=true
+      # - SCEP_CHALLENGE_PASSWORD=<your-challenge-secret>
+      # Neural ML layer
+      - ML_SCORER_PATH=/data/models/anomaly_scorer.pkl
+      - ML_TAIL_LINES=10000
+      - ML_LOG_PATH=/data/logs/app.log
+      # ML_LOG_PATHS=/var/log/app/service-a.log:/var/log/app/service-b.log
+      - GUNICORN_CMD_ARGS=--error-logfile /data/logs/app.log --capture-output
+      # Secrets: either set here or let the container generate on first run
+      # - CERT_MASTER_KEY=<your-fernet-key>
+      # - API_KEY=<your-api-key>
+    networks:
+      - default
+      - bm-net
+    restart: unless-stopped
+
+networks:
+  bm-net:
+    external: true
+    name: docker_bm-net
+
+volumes:
+  certmanager-data:

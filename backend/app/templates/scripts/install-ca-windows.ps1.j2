@@ -1,0 +1,38 @@
+# SSL Certificate Manager — CA Trust Installation (Windows)
+# Generated: {{ timestamp }}
+# Root CA: {{ ca_cn }}
+#
+# Run this script as Administrator in PowerShell.
+# It imports the internal root CA into the Local Machine Trusted Root store.
+
+#Requires -RunAsAdministrator
+
+$ErrorActionPreference = "Stop"
+$CaFile = "{{ ca_filename_der }}"
+
+# Check file exists
+if (-not (Test-Path ".\$CaFile")) {
+    Write-Error "$CaFile not found in current directory."
+    exit 1
+}
+
+Write-Host "Importing $CaFile into Local Machine Trusted Root Certification Authorities..." -ForegroundColor Cyan
+
+# Import certificate
+Import-Certificate -FilePath ".\$CaFile" `
+    -CertStoreLocation Cert:\LocalMachine\Root `
+    -Confirm
+
+# Verify import
+Write-Host ""
+Write-Host "Verifying installation..." -ForegroundColor Cyan
+$cert = Get-ChildItem -Path Cert:\LocalMachine\Root | Where-Object { $_.Subject -like "*{{ ca_cn }}*" }
+
+if ($cert) {
+    Write-Host "✓ Root CA installed successfully." -ForegroundColor Green
+    Write-Host "  Subject: $($cert.Subject)"
+    Write-Host "  Thumbprint: $($cert.Thumbprint)"
+    Write-Host "  Expires: $($cert.NotAfter)"
+} else {
+    Write-Warning "Certificate not found in store after import. Check manually."
+}

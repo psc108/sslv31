@@ -1,0 +1,79 @@
+---
+- name: Backup original sshd_config
+  copy:
+    src: /etc/ssh/sshd_config
+    dest: /etc/ssh/sshd_config.bak
+    remote_src: yes
+    force: no
+
+- name: Set SSH port
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?Port "
+    line: "Port {{ ssh_port | default(22) }}"
+
+- name: Set PermitRootLogin
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PermitRootLogin"
+    line: "PermitRootLogin {{ ssh_permit_root_login | default('prohibit-password') }}"
+
+- name: Set PasswordAuthentication
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PasswordAuthentication"
+    line: "PasswordAuthentication {{ ssh_password_auth | default('no') }}"
+
+- name: Set MaxAuthTries
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?MaxAuthTries"
+    line: "MaxAuthTries {{ ssh_max_auth_tries | default(3) }}"
+
+- name: Set X11Forwarding
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?X11Forwarding"
+    line: "X11Forwarding {{ ssh_x11_forwarding | default('no') }}"
+
+- name: Disable empty passwords
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?PermitEmptyPasswords"
+    line: "PermitEmptyPasswords no"
+
+- name: Set AllowUsers
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^#?AllowUsers"
+    line: "AllowUsers {{ ssh_allowed_users }}"
+  when: ssh_allowed_users | default('') | length > 0
+
+- name: Remove AllowUsers if not set
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^AllowUsers"
+    state: absent
+  when: ssh_allowed_users | default('') | length == 0
+
+- name: Validate sshd config
+  command: sshd -t
+  register: sshd_check
+  changed_when: false
+
+- name: Restart sshd
+  systemd:
+    name: sshd
+    state: restarted
+    daemon_reload: yes
+  when: sshd_check.rc == 0
+
+- name: Show hardening summary
+  debug:
+    msg: |
+      SSH Hardening applied:
+        Port: {{ ssh_port | default(22) }}
+        PermitRootLogin: {{ ssh_permit_root_login | default('prohibit-password') }}
+        PasswordAuth: {{ ssh_password_auth | default('no') }}
+        MaxAuthTries: {{ ssh_max_auth_tries | default(3) }}
+        X11Forwarding: {{ ssh_x11_forwarding | default('no') }}

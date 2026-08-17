@@ -1,0 +1,28 @@
+---
+# Verify Redis TLS is working. When redis_tls_enabled, the role sets
+# `tls-port {{ redis_port }}` and `port 0` (plaintext disabled), so the
+# same configured port serves TLS directly — no STARTTLS negotiation needed.
+
+- name: "TLS_VERIFY redis"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.redis_port | default(6379) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    verify=$(echo "$result" | grep "Verify return code:" | head -1 | sed 's/.*Verify return code: //')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"redis\",\"port\":{{ product_vars.redis_port | default(6379) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"verify\":\"$verify\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"redis\",\"port\":{{ product_vars.redis_port | default(6379) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: redis_tls_check
+  changed_when: false
+  failed_when: false
+  when: product_vars.redis_tls_enabled | default(true) | bool
+
+- name: "TLS_OUTPUT redis"
+  ansible.builtin.debug:
+    msg: "{{ redis_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.redis_tls_enabled | default(true) | bool

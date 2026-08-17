@@ -1,0 +1,50 @@
+---
+- name: Merge product vars with defaults
+  ansible.builtin.set_fact:
+    bouncycastle_install_path: "{{ product_vars.bouncycastle_install_path | default('/opt/bouncycastle') }}"
+    bouncycastle_register_provider: "{{ product_vars.bouncycastle_register_provider | default(true) }}"
+
+- name: Purge existing Bouncy Castle installation
+  ansible.builtin.file:
+    path: "{{ bouncycastle_install_path }}"
+    state: absent
+
+- name: Create Bouncy Castle directory
+  ansible.builtin.file:
+    path: "{{ bouncycastle_install_path }}"
+    state: directory
+    mode: "0755"
+
+- name: Download Bouncy Castle provider jar
+  ansible.builtin.shell: |
+    curl -fsSL -o {{ bouncycastle_install_path }}/bcprov-jdk18on-1.79.jar \
+      https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.79/bcprov-jdk18on-1.79.jar
+  changed_when: true
+
+- name: Download Bouncy Castle PKIX jar
+  ansible.builtin.shell: |
+    curl -fsSL -o {{ bouncycastle_install_path }}/bcpkix-jdk18on-1.79.jar \
+      https://repo1.maven.org/maven2/org/bouncycastle/bcpkix-jdk18on/1.79/bcpkix-jdk18on-1.79.jar
+  changed_when: true
+
+- name: Register as JCE security provider
+  ansible.builtin.shell: |
+    JAVA_SEC=$(find /usr/lib/jvm -name java.security -path '*/conf/security/*' | head -1)
+    if [ -z "$JAVA_SEC" ]; then echo "java.security not found"; exit 1; fi
+    # Get next provider number
+    LAST=$(grep -oP 'security\.provider\.\K\d+' "$JAVA_SEC" | sort -n | tail -1)
+    NEXT=$((LAST + 1))
+    # Add if not already present
+    if ! grep -q 'BouncyCastleProvider' "$JAVA_SEC"; then
+      echo "security.provider.${NEXT}=org.bouncycastle.jce.provider.BouncyCastleProvider" >> "$JAVA_SEC"
+    fi
+    # Copy jar to ext
+    JAVA_EXT=$(dirname "$JAVA_SEC")/../lib/ext
+    mkdir -p "$JAVA_EXT"
+    cp {{ bouncycastle_install_path }}/bcprov-jdk18on-1.79.jar "$JAVA_EXT/" 2>/dev/null || true
+  when: bouncycastle_register_provider | bool
+  changed_when: true
+
+- name: Show Bouncy Castle status
+  ansible.builtin.debug:
+    msg: "Bouncy Castle 1.79 installed at {{ bouncycastle_install_path }}"

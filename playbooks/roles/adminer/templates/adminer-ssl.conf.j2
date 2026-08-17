@@ -1,0 +1,33 @@
+server {
+    listen 80;
+    server_name {{ adminer_server_name }};
+    return 301 https://$host:{{ adminer_listen_port }}$request_uri;
+}
+
+server {
+    listen {{ adminer_listen_port }} ssl;
+    server_name {{ adminer_server_name }};
+
+    ssl_certificate /etc/nginx/ssl/adminer-fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/adminer-key.pem;
+
+    root {{ adminer_doc_root }};
+    index index.php;
+
+    location / {
+        try_files $uri $uri/ /index.php$is_args$args;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+
+    location /health {
+        access_log off;
+        return 200 'ok';
+        add_header Content-Type text/plain;
+    }
+}

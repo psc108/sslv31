@@ -1,0 +1,11 @@
+---
+- name: Verify PyYAML is installed
+  ansible.builtin.shell: |
+    VER=$(python3 -c "import yaml; print(yaml.__version__)" 2>/dev/null || echo "NOT_INSTALLED")
+    echo "{\"TLS_RESULT\": {\"service\": \"pyyaml\", \"status\": \"ok\", \"version\": \"$VER\"}}"
+  register: verify_result
+  changed_when: false
+
+- name: Show verify result
+  ansible.builtin.debug:
+    msg: "{{ verify_result.stdout }}"

@@ -1,0 +1,63 @@
+---
+- name: Purge existing filebeat
+  apt:
+    name: filebeat
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Import Elastic GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elastic repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+    filename: elastic-8.x
+
+- name: Install filebeat
+  apt:
+    name: filebeat
+    state: present
+    update_cache: yes
+
+- name: Configure filebeat
+  copy:
+    dest: /etc/filebeat/filebeat.yml
+    content: |
+      filebeat.inputs:
+      {% for input in filebeat_inputs | default([{'type': 'filestream', 'paths': '/var/log/syslog,/var/log/auth.log'}]) %}
+        - type: {{ input.type | default('filestream') }}
+          enabled: true
+          paths:
+      {% for path in input.paths.split(',') %}
+            - {{ path | trim }}
+      {% endfor %}
+      {% endfor %}
+
+      {% if filebeat_output_type | default('elasticsearch') == 'elasticsearch' %}
+      output.elasticsearch:
+        hosts: ["{{ filebeat_output_host | default('localhost') }}:{{ filebeat_output_port | default(9200) }}"]
+      {% else %}
+      output.logstash:
+        hosts: ["{{ filebeat_output_host | default('localhost') }}:{{ filebeat_output_port | default(5044) }}"]
+      {% endif %}
+
+      logging.level: info
+      logging.to_files: true
+      logging.files:
+        path: /var/log/filebeat
+        name: filebeat
+        keepfiles: 7
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable and restart filebeat
+  systemd:
+    name: filebeat
+    enabled: yes
+    state: restarted
+    daemon_reload: yes

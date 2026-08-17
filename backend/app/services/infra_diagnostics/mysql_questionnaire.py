@@ -1,0 +1,155 @@
+"""MySQL diagnostic questionnaire definition."""
+from __future__ import annotations
+
+
+def get_questionnaire() -> list[dict]:
+    return [
+        {
+            "id": "mysql.service_status",
+            "title": "Service Status",
+            "description": "Confirm the MySQL daemon is running and collect version and log information.",
+            "items": [
+                {
+                    "id": "mysql.service_status",
+                    "label": "MySQL service status",
+                    "context": "Confirms whether the MySQL daemon is running and shows recent state transitions.",
+                    "command": "systemctl status mysql --no-pager -l 2>/dev/null || systemctl status mysqld --no-pager -l 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.version",
+                    "label": "MySQL version",
+                    "context": "Version string used to check compatibility with the Java connector and SSL features.",
+                    "command": "mysql --version 2>/dev/null || mysqld --version 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.error_log",
+                    "label": "MySQL error log (last 100 lines)",
+                    "context": "The error log is the primary source of SSL errors, authentication failures, and startup problems.",
+                    "command": "journalctl -u mysql -n 100 --no-pager 2>/dev/null || tail -n 100 /var/log/mysql/error.log 2>/dev/null || tail -n 100 /var/log/mysqld.log 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.port",
+                    "label": "Port 3306 listening",
+                    "context": "Confirms MySQL is bound and accepting connections on port 3306.",
+                    "command": "ss -tlnp | grep 3306",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.firewall",
+                    "label": "Firewall rules for port 3306",
+                    "context": "Confirms the firewall is not blocking connections to MySQL.",
+                    "command": "firewall-cmd --list-all 2>/dev/null || iptables -L -n 2>/dev/null | grep 3306",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "id": "mysql.ssl",
+            "title": "SSL / TLS",
+            "description": "Confirm SSL is enabled on the MySQL server and the certificate is valid.",
+            "items": [
+                {
+                    "id": "mysql.ssl_variables",
+                    "label": "SSL system variables",
+                    "context": "Shows whether SSL is enabled (have_ssl = YES/DISABLED) and the configured cert paths.",
+                    "command": 'mysql -u root -p -e "SHOW VARIABLES LIKE \'%ssl%\';" 2>/dev/null',
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.ssl_cert_info",
+                    "label": "SSL certificate details",
+                    "context": "Shows subject, issuer, and expiry for the MySQL server certificate. Uses the default path — update if SHOW VARIABLES shows a different path.",
+                    "command": "openssl x509 -in /etc/mysql/ssl/server-cert.pem -noout -text 2>/dev/null | grep -E 'Subject:|Issuer:|Not Before:|Not After:|DNS:'",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+                {
+                    "id": "mysql.ssl_cert_path",
+                    "label": "SSL cert file path (if non-default)",
+                    "context": "If SHOW VARIABLES shows a different ssl_cert path, paste it here so the correct certificate can be checked.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": False,
+                },
+            ],
+        },
+        {
+            "id": "mysql.users",
+            "title": "User & Permissions",
+            "description": "Confirm the service account exists and has the required grants.",
+            "items": [
+                {
+                    "id": "mysql.param.service_user",
+                    "label": "Service account username",
+                    "context": "The MySQL username the application connects with (e.g. 'ecs_app'). Used to build the SHOW GRANTS command.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.param.host",
+                    "label": "Service account host",
+                    "context": "The host part of the MySQL account (e.g. '%' or '10.0.0.1'). Used to build the SHOW GRANTS command.",
+                    "command": None,
+                    "input_type": "text",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.user_exists",
+                    "label": "Service account existence",
+                    "context": "Confirms the account exists in mysql.user and shows the authentication plugin.",
+                    "command": "mysql -u root -p -e \"SELECT user, host, plugin, account_locked FROM mysql.user WHERE user='<service_user>';\" 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+                {
+                    "id": "mysql.user_grants",
+                    "label": "Service account grants",
+                    "context": "Lists all privileges granted to the service account. Missing SELECT/INSERT/UPDATE/DELETE on the service database will cause failures.",
+                    "command": "mysql -u root -p -e \"SHOW GRANTS FOR '<service_user>'@'<host>';\" 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": True,
+                },
+            ],
+        },
+        {
+            "id": "mysql.capacity",
+            "title": "Connectivity & Capacity",
+            "description": "Check connection limits and replication status.",
+            "items": [
+                {
+                    "id": "mysql.max_connections",
+                    "label": "Max connections setting",
+                    "context": "The configured maximum number of simultaneous connections.",
+                    "command": "mysql -u root -p -e \"SHOW VARIABLES LIKE 'max_connections';\" 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+                {
+                    "id": "mysql.threads_connected",
+                    "label": "Current connection count",
+                    "context": "The number of connections currently open. If near max_connections, new connections will be refused.",
+                    "command": "mysql -u root -p -e \"SHOW STATUS LIKE 'Threads_connected';\" 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+                {
+                    "id": "mysql.replication_status",
+                    "label": "Replication status (if applicable)",
+                    "context": "Shows replication lag and errors. Leave blank if this is not a replica.",
+                    "command": "mysql -u root -p -e \"SHOW REPLICA STATUS\\G\" 2>/dev/null || mysql -u root -p -e \"SHOW SLAVE STATUS\\G\" 2>/dev/null",
+                    "input_type": "command_output",
+                    "required": False,
+                },
+            ],
+        },
+    ]

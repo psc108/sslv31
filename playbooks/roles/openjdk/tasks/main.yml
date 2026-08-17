@@ -1,0 +1,12 @@
+---
+# OpenJDK role — already installed by the base role.
+# This role exists so the product runner doesn't fail when openjdk is in the product list.
+
+- name: Verify Java is installed
+  ansible.builtin.command: java -version
+  changed_when: false
+  register: java_check
+
+- name: Report Java version
+  ansible.builtin.debug:
+    msg: "Java already installed: {{ java_check.stderr_lines[0] | default('unknown') }}"

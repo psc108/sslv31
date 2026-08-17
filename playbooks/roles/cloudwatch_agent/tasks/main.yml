@@ -1,0 +1,71 @@
+---
+# roles/cloudwatch_agent/tasks/main.yml
+# Install and configure the AWS CloudWatch agent on EC2 instances.
+# Only runs when the host has an instance_id fact (i.e. is an EC2 instance).
+
+- name: Check if running on EC2
+  uri:
+    url: http://169.254.169.254/latest/meta-data/instance-id
+    timeout: 2
+    return_content: true
+  register: imds_check
+  failed_when: false
+  changed_when: false
+
+- name: Set ec2_instance_id fact
+  set_fact:
+    ec2_instance_id: "{{ imds_check.content }}"
+  when: imds_check.status == 200
+
+- name: Skip CloudWatch agent on non-EC2 hosts
+  meta: end_host
+  when: imds_check.status != 200
+
+# --- Install ---
+
+- name: Download CloudWatch agent package (Ubuntu/Debian)
+  get_url:
+    url: "https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb"
+    dest: /tmp/amazon-cloudwatch-agent.deb
+    mode: "0644"
+  when: ansible_facts.os_family == "Debian"
+
+- name: Install CloudWatch agent (Ubuntu/Debian)
+  apt:
+    deb: /tmp/amazon-cloudwatch-agent.deb
+    state: present
+  when: ansible_facts.os_family == "Debian"
+
+- name: Download CloudWatch agent package (RHEL)
+  get_url:
+    url: "https://s3.amazonaws.com/amazoncloudwatch-agent/redhat/amd64/latest/amazon-cloudwatch-agent.rpm"
+    dest: /tmp/amazon-cloudwatch-agent.rpm
+    mode: "0644"
+  when: ansible_facts.os_family == "RedHat"
+
+- name: Install CloudWatch agent (RHEL)
+  dnf:
+    name: /tmp/amazon-cloudwatch-agent.rpm
+    state: present
+    disable_gpg_check: true
+  when: ansible_facts.os_family == "RedHat"
+
+# --- Configure ---
+
+- name: Deploy CloudWatch agent configuration
+  template:
+    src: amazon-cloudwatch-agent.json.j2
+    dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart cloudwatch agent
+
+# --- Start ---
+
+- name: Start and enable CloudWatch agent
+  command: >
+    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl
+    -a fetch-config -m ec2 -s
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+  changed_when: true

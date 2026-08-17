@@ -1,0 +1,50 @@
+# PostgreSQL deployment profile
+# Usage: docker compose -f docker-compose.postgres.yml up -d
+#
+# First run creates the database and runs migrations automatically.
+# Data persists in the certmanager-pgdata volume.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ssl-cert-manager-db
+    environment:
+      POSTGRES_DB: certmanager
+      POSTGRES_USER: certmanager
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-certmanager_secret}
+    volumes:
+      - certmanager-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U certmanager -d certmanager"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  certmanager:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ssl-cert-manager
+    ports:
+      - "80:80"
+      - "8000:8000"
+    volumes:
+      - certmanager-data:/data
+    environment:
+      - DATA_DIR=/data
+      - BACKUP_DIR=/data/backups
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=postgresql+asyncpg://certmanager:${POSTGRES_PASSWORD:-certmanager_secret}@postgres:5432/certmanager
+      - DB_POOL_SIZE=20
+      - DB_MAX_OVERFLOW=10
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  certmanager-data:
+  certmanager-pgdata:

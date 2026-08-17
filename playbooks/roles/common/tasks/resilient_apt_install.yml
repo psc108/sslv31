@@ -1,0 +1,35 @@
+---
+# resilient_apt_install.yml — installs a set of apt packages, repairing any
+# interrupted dpkg transaction before every attempt and retrying several
+# times with pacing between attempts.
+#
+# Found necessary via real live builds on this Docker host: the apt/dpkg
+# process can get killed mid-transaction by network-interface disruption
+# outside this system's control, leaving a package "half configured" and
+# every subsequent apt-get call refusing to proceed ("dpkg was interrupted")
+# until repaired. A single repair-then-retry isn't enough on its own — live
+# testing found the retry attempt itself can get hit by the same disruption
+# if it fires immediately, since the disruption happens in bursts. Spacing
+# several attempts apart (delay) gives a much better chance of landing in a
+# quiet window between bursts. The root cause of the disruption itself isn't
+# something this playbook can fix (traced to the host's own network stack,
+# not anything Ansible/SSH-side), so this makes package installs survive it
+# instead.
+#
+# Include with:
+#   vars:
+#     resilient_apt_packages: [pkg1, pkg2]
+#     resilient_apt_update_cache: true   # optional, default true
+
+- name: "Install packages (resilient): {{ resilient_apt_packages | join(', ') }}"
+  ansible.builtin.shell: |
+    dpkg --configure -a 2>/dev/null || true
+    {% if resilient_apt_update_cache | default(true) %}
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" -o DPkg::Lock::Timeout=60 update
+    {% endif %}
+    DEBIAN_FRONTEND=noninteractive apt-get -y -o "Dpkg::Options::=--force-confdef" -o "Dpkg::Options::=--force-confold" -o DPkg::Lock::Timeout=60 install {{ resilient_apt_packages | join(' ') }}
+  register: resilient_apt_result
+  until: resilient_apt_result.rc == 0
+  retries: 5
+  delay: 15
+  changed_when: "'0 upgraded, 0 newly installed, 0 to remove' not in resilient_apt_result.stdout"

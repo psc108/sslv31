@@ -1,0 +1,29 @@
+---
+# Verify the Docker daemon's TLS API is working. dockerd also requires a
+# valid client certificate for actual API calls (tlsverify: true) — this
+# check only proves the server side of the handshake (the deployed cert is
+# genuinely presented over TLS), same scope as every other TLS_VERIFY task
+# here, not a full mutual-TLS client round trip.
+
+- name: "TLS_VERIFY docker_ce"
+  ansible.builtin.shell: |
+    result=$(echo | openssl s_client -connect 127.0.0.1:{{ product_vars.docker_tls_port | default(2376) }} 2>&1)
+    subject=$(echo "$result" | grep "subject=" | head -1 | sed 's/.*subject=//')
+    issuer=$(echo "$result" | grep "issuer=" | head -1 | sed 's/.*issuer=//')
+    expiry=$(echo "$result" | grep "notAfter=" | head -1 | sed 's/.*notAfter=//')
+    protocol=$(echo "$result" | grep -E "^\s+Protocol\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    cipher=$(echo "$result" | grep -E "^\s+Cipher\s*:" | head -1 | awk -F: '{print $2}' | xargs)
+    if echo "$result" | grep -q "CONNECTED"; then
+      echo "TLS_RESULT:{\"product\":\"docker_ce\",\"port\":{{ product_vars.docker_tls_port | default(2376) }},\"status\":\"ok\",\"subject\":\"$subject\",\"issuer\":\"$issuer\",\"expiry\":\"$expiry\",\"protocol\":\"$protocol\",\"cipher\":\"$cipher\"}"
+    else
+      echo "TLS_RESULT:{\"product\":\"docker_ce\",\"port\":{{ product_vars.docker_tls_port | default(2376) }},\"status\":\"failed\",\"error\":\"Connection refused or TLS handshake failed\"}"
+    fi
+  register: docker_ce_tls_check
+  changed_when: false
+  failed_when: false
+  when: product_vars.docker_tls_enabled | default(true) | bool
+
+- name: "TLS_OUTPUT docker_ce"
+  ansible.builtin.debug:
+    msg: "{{ docker_ce_tls_check.stdout_lines | select('match', '^TLS_RESULT:') | list }}"
+  when: product_vars.docker_tls_enabled | default(true) | bool

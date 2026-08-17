@@ -1,0 +1,140 @@
+---
+- name: Purge existing postgresql
+  apt:
+    name: "postgresql*"
+    state: absent
+    purge: yes
+  ignore_errors: yes
+
+- name: Remove data directory
+  file:
+    path: /var/lib/postgresql
+    state: absent
+
+- name: Install postgresql
+  apt:
+    name: [postgresql, postgresql-client, python3-psycopg2]
+    state: present
+    update_cache: yes
+
+- name: Get postgresql version directory
+  shell: ls /etc/postgresql/ | head -1
+  register: pg_version_dir
+  changed_when: false
+
+- name: Set pg config path
+  set_fact:
+    pg_conf_dir: "/etc/postgresql/{{ pg_version_dir.stdout }}/main"
+
+# Bare pg_* vars below were never actually wired up — site.yml's product loop
+# only sets product_vars (the whole dict), never flattens it into bare names,
+# so every reference here used to silently fall through to its | default(...)
+# regardless of what was actually configured (or, for pg_superuser_password
+# below which had no default, stayed genuinely undefined). Every reference is
+# now product_vars.<key>, matching pg_*'s own config_schema keys in
+# catalogue_service.py and the working pattern already used by rabbitmq/mysql.
+
+- name: Configure listen_addresses
+  lineinfile:
+    path: "{{ pg_conf_dir }}/postgresql.conf"
+    regexp: "^#?listen_addresses"
+    line: "listen_addresses = '{{ product_vars.pg_listen_addresses | default('*') }}'"
+
+- name: Configure port
+  lineinfile:
+    path: "{{ pg_conf_dir }}/postgresql.conf"
+    regexp: "^#?port"
+    line: "port = {{ product_vars.pg_port | default(5432) }}"
+
+- name: Create postgresql SSL directory
+  file:
+    path: /etc/postgresql/ssl
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0750"
+  when: product_vars.pg_tls_enabled | default(true) | bool
+
+- name: Deploy PostgreSQL server certificate
+  copy:
+    content: "{{ server_cert_pem }}"
+    dest: /etc/postgresql/ssl/server.crt
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  when: product_vars.pg_tls_enabled | default(true) | bool
+
+- name: Deploy PostgreSQL server key
+  copy:
+    content: "{{ server_key_pem }}"
+    dest: /etc/postgresql/ssl/server.key
+    owner: postgres
+    group: postgres
+    mode: "0600"
+  when: product_vars.pg_tls_enabled | default(true) | bool
+
+- name: Deploy PostgreSQL CA chain
+  copy:
+    content: "{{ ca_chain_pem }}"
+    dest: /etc/postgresql/ssl/ca.crt
+    owner: postgres
+    group: postgres
+    mode: "0644"
+  when: product_vars.pg_tls_enabled | default(true) | bool
+
+- name: Configure TLS
+  blockinfile:
+    path: "{{ pg_conf_dir }}/postgresql.conf"
+    marker: "# {mark} ANSIBLE TLS CONFIG"
+    block: |
+      ssl = on
+      ssl_cert_file = '/etc/postgresql/ssl/server.crt'
+      ssl_key_file = '/etc/postgresql/ssl/server.key'
+      ssl_ca_file = '/etc/postgresql/ssl/ca.crt'
+  when: product_vars.pg_tls_enabled | default(true) | bool
+
+- name: Configure pg_hba.conf (default allow)
+  copy:
+    dest: "{{ pg_conf_dir }}/pg_hba.conf"
+    content: |
+      # TYPE  DATABASE  USER  ADDRESS  METHOD
+      local   all       postgres               peer
+      local   all       all                    peer
+      {% for entry in product_vars.pg_hba_entries | default([]) %}
+      {{ entry.type | default('host') }}  {{ entry.database | default('all') }}  {{ entry.user | default('all') }}  {{ entry.address | default('0.0.0.0/0') }}  {{ entry.method | default('scram-sha-256') }}
+      {% endfor %}
+      {% if product_vars.pg_hba_entries | default([]) | length == 0 %}
+      host    all       all    0.0.0.0/0        scram-sha-256
+      host    all       all    ::/0             scram-sha-256
+      {% endif %}
+    owner: postgres
+    group: postgres
+    mode: "0640"
+
+- name: Restart postgresql
+  systemd:
+    name: postgresql
+    enabled: yes
+    state: restarted
+    daemon_reload: yes
+
+- name: Set superuser password
+  become: yes
+  become_user: postgres
+  command: psql -c "ALTER USER postgres PASSWORD '{{ product_vars.pg_superuser_password }}';"
+  when: product_vars.pg_superuser_password | default('') | length > 0
+  changed_when: true
+
+- name: Create databases
+  become: yes
+  become_user: postgres
+  command: psql -c "CREATE DATABASE {{ item.name }} OWNER {{ item.owner | default('postgres') }};"
+  loop: "{{ product_vars.pg_databases | default([]) }}"
+  ignore_errors: yes
+
+- name: Create users
+  become: yes
+  become_user: postgres
+  command: psql -c "CREATE USER {{ item.name }} WITH PASSWORD '{{ item.password }}' {{ item.priv | default('LOGIN') }};"
+  loop: "{{ product_vars.pg_users | default([]) }}"
+  ignore_errors: yes

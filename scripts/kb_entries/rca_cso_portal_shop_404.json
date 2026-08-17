@@ -1,0 +1,50 @@
+[
+  {
+    "key": "rca-cso-portal-404-root-cause",
+    "category": "Keystone",
+    "severity": "critical",
+    "pattern": "customerVisibilityMode\\s*=\\s*NONE|Customer visibility mode is NONE for user|cannot see requested customer",
+    "title": "Keystone service account has customerVisibilityMode=NONE — customer-scoped reads rejected (403)",
+    "plain_english": "A system-domain service account (e.g. pricingSvc, catalogSvc, ticketingSvc) was issued a Keystone token with customerVisibilityMode=NONE and an empty visibleCustomerIds list. Any inter-service call that reads customer-scoped data is rejected with HTTP 403, because CpsKeystoneClient/ServiceUtils computes visibility from role assignments when the Keystone user.extra attributes (cust_visibility_mode, visible_customer_ids) are empty, and the account holds none of the qualifying roles.",
+    "causes": [
+      "Service account was provisioned without any role from SecurityConstants.CUST_VISIBILITY_ADMIN_ROLES = {CUSTOMERS_ADM_ACCOUNTS_CUSTOMERS_ADMIN, CUSTOMERS_SYSTEM_ADMIN, IMPERSONATOR}.",
+      "The installer's roles.yml only defines the role catalogue/inheritance graph; it does not carry user-to-role assignments, so the users input file needed to grant these roles was never supplied.",
+      "getCustomerVisibilityModeBasedOnRoles() is a binary check: holding any one qualifying role yields ALL, holding none yields NONE — there is no partial state, so the defect affects every customer-scoped call the account makes.",
+      "Because the condition depends on traffic exercising the affected code path, log evidence can show gaps (zero occurrences) that reflect absence of traffic, not periods of correct operation — the fault can be present since day one of installation without being noticed."
+    ],
+    "fix_steps": [
+      "Confirm target state from the product binaries/decompiled SecurityConstants rather than assuming; grant the least-privileged qualifying role, typically CUSTOMERS_SYSTEM_ADMIN (avoid IMPERSONATOR/CUSTOMERS_ADM_ACCOUNTS_CUSTOMERS_ADMIN unless specifically required).",
+      "openstack role add --domain system --user <account> CUSTOMERS_SYSTEM_ADMIN",
+      "Verify: openstack role assignment list --user <account> --names | grep CUSTOMERS_SYSTEM_ADMIN",
+      "Restart the affected service to clear cached tokens and force re-authentication, then confirm in logs: grep getCustomerVisibility application.log — expect customerVisibilityMode=ALL (or SELECTED) instead of NONE.",
+      "Apply to one account first and confirm before rolling out to the remaining system-domain accounts (pricingSvc, catalogSvc, ticketingSvc, customersSvc, etc.) — this is a security-relevant grant, not a blanket fix.",
+      "Check for a backlog: any FatalMessageListenerException raised while the defect was live is not retried automatically — inspect dead-letter/failure queues and replay or force a resync once the grant is in place.",
+      "If this environment was built from a vendor installer template, treat it as a provisioning defect likely present on every estate from the same template, and raise a support case rather than treating it as a one-off local fix."
+    ],
+    "see_also": ["ks-002", "rca-cso-portal-404-symptom"]
+  },
+  {
+    "key": "rca-cso-portal-404-symptom",
+    "category": "HTTP Client",
+    "severity": "high",
+    "pattern": "has no valid contract|It seems that you are in the wrong route|FatalMessageListenerException",
+    "title": "Portal shop 404 / catalog-items 400 — masks a 403 five layers upstream",
+    "plain_english": "The customer portal's shop list fails to populate and deep links to shop items render a generic client-side 404 ('wrong route'), even though nginx, the SPA routing, and the portal's own code are all working correctly. The real failure is an HTTP 403 raised much further upstream (see the Keystone customerVisibilityMode=NONE entry) that never reaches the browser as a 403 at all.",
+    "causes": [
+      "customers-svc rejects a customer-scoped contract read with 403 for a system-domain service account (see Keystone customerVisibilityMode=NONE).",
+      "pricing-svc cannot sync its contract cache in response — the event listener throws FatalMessageListenerException and the message is dead-lettered/discarded rather than retried.",
+      "catalog-svc, seeing no valid contract for the customer, rejects the priced catalogue query (portal/catalog-items) with HTTP 400 — while catalog-item-counts and the unpriced catalog-items-without-prices variant still return 200, which is the tell that only the priced/contract-dependent path is broken.",
+      "The portal UI passes the 400 through unchanged; the client never populates its shop state, so the list stays empty and any deep link to an item resolves to the generic NotFoundScreen/'wrong route' page — a 200-status SPA shell with an internal client-side 404, not a server routing fault.",
+      "A fix to the root cause can appear not to work: after granting visibility, catalog-items may flip from 400 to 200 but still return an empty/tiny payload if the customer additionally lacks a catalogue entitlement or the rate card has no prices — two independent causes can produce the identical symptom."
+    ],
+    "fix_steps": [
+      "Do not chase this at the nginx or portal-routing layer — confirm proxy responses are byte-identical to origin (ETag/Content-Length) and that the SPA route/index.html/base href are all correct before going further; if they are, the fault is upstream.",
+      "Enable nginx access logs with $upstream_addr and $upstream_status if not already on — this is normally the fastest way to isolate which backend call actually returned the error status.",
+      "Trace the failing call by correlation id (x-call-id or equivalent) across nginx access log -> catalog-svc log -> pricing-svc log -> customers-svc log to find the first non-2xx response in the chain.",
+      "Search the portal's locale.json for the literal error text if the app is internationalised — JS bundles typically contain only message keys, not the rendered strings.",
+      "Resolve the underlying 403 (see the Keystone customerVisibilityMode entry), then re-verify catalog-items returns a non-trivial payload — an empty 200 usually means a missing catalogue entitlement or missing prices on the rate card, which is separate environment configuration, not a code defect.",
+      "Re-trigger pricing's contract cache sync (e.g. update the contract to fire a fresh contract/updated event) rather than assuming a service restart alone will repopulate it."
+    ],
+    "see_also": ["http-003", "rmq-004", "rca-cso-portal-404-root-cause"]
+  }
+]

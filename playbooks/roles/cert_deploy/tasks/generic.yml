@@ -1,0 +1,32 @@
+---
+- name: Ensure /etc/ssl/certmanager exists
+  ansible.builtin.file:
+    path: /etc/ssl/certmanager
+    state: directory
+    mode: "0750"
+    owner: root
+    group: root
+
+- name: Deploy server certificate
+  ansible.builtin.copy:
+    content: "{{ _cert_pem }}"
+    dest: /etc/ssl/certmanager/server.crt
+    mode: "0644"
+
+- name: Deploy server key
+  ansible.builtin.copy:
+    content: "{{ _key_pem }}"
+    dest: /etc/ssl/certmanager/server.key
+    mode: "0600"
+
+- name: Deploy fullchain
+  ansible.builtin.copy:
+    content: "{{ _chain_pem }}"
+    dest: /etc/ssl/certmanager/fullchain.pem
+    mode: "0644"
+
+- name: Deploy CA chain
+  ansible.builtin.copy:
+    content: "{{ _ca_pem }}"
+    dest: /etc/ssl/certmanager/ca-chain.pem
+    mode: "0644"
